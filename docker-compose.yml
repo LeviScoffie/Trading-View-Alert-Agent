@@ -1,8 +1,12 @@
 version: '3.8'
 
-# Shared named volume — both services read/write the same SQLite databases:
-#   /app/data/alerts.db   (webhook-receiver)
-#   /app/data/ohlcv.db    (analysis-engine, written by analysis_bridge.py)
+# Shared named volume — all services share the same SQLite databases:
+#   /app/data/alerts.db     (webhook-receiver writes; email-notifier reads)
+#   /app/data/ohlcv.db      (analysis_bridge.py writes; email-notifier reads)
+#   /data/scheduler.db      (scheduler writes; mounted at /data not /app/data)
+#
+# Note: analysis-engine is NOT a separate container — it runs as an embedded
+# library inside webhook-receiver via analysis_bridge.py + alert_processor.py
 volumes:
   tv_data:
 
@@ -48,12 +52,14 @@ services:
     networks:
       - tv-agent-network
 
-  # ── Layer 3: Email Notifier (scheduled reports) ────────────────────────────
+  # ── Layer 3: Email Notifier (scheduled reports, triggered via HTTP) ──────────
   email-notifier:
     build:
       context: ./email-notifier
       dockerfile: Dockerfile
     container_name: tv-email-notifier
+    ports:
+      - "8001:8001"
     volumes:
       - tv_data:/app/data
     environment:
@@ -74,5 +80,43 @@ services:
       MONTHLY_REPORT_HOUR: "${MONTHLY_REPORT_HOUR:-17}"
       SCHEDULE_TIMEZONE: "${SCHEDULE_TIMEZONE:-America/New_York}"
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    networks:
+      - tv-agent-network
+
+  # ── Scheduler (orchestrates report timing + maintenance) ───────────────────
+  scheduler:
+    build:
+      context: ./scheduler
+      dockerfile: Dockerfile
+    container_name: tv-scheduler
+    ports:
+      - "8003:8003"
+    volumes:
+      - tv_data:/data
+    environment:
+      SCHEDULER_LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      SCHEDULER_API_HOST: "0.0.0.0"
+      SCHEDULER_API_PORT: "8003"
+      SCHEDULER_DB_PATH: "/data/scheduler.db"
+      ALERTS_DB_PATH: "/data/alerts.db"
+      WEBHOOK_RECEIVER_URL: "http://webhook-receiver:8000"
+      EMAIL_NOTIFIER_URL: "http://email-notifier:8001"
+      SCHEDULE_TIMEZONE: "${SCHEDULE_TIMEZONE:-America/New_York}"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    depends_on:
+      - webhook-receiver
+      - email-notifier
     networks:
       - tv-agent-network
