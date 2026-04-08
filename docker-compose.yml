@@ -1,0 +1,213 @@
+# TradingView Alert Agent - Docker Compose Configuration
+# Multi-service orchestration for webhook processing, analysis, and notifications
+
+version: "3.8"
+
+services:
+  # Service 1: Webhook Receiver
+  # Receives TradingView alerts via webhook and stores them in SQLite
+  webhook-receiver:
+    build:
+      context: ./webhook-receiver
+      dockerfile: Dockerfile
+    container_name: tradingview-webhook-receiver
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - tradingview-data:/app/data/persistent
+    environment:
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET}
+      - DATABASE_PATH=${DATABASE_PATH:-/app/data/alerts.db}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    networks:
+      - tradingview-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Service 2: Analysis Engine
+  # Processes alert data, calculates moving averages, and generates signals
+  analysis-engine:
+    build:
+      context: ./analysis-engine
+      dockerfile: Dockerfile
+    container_name: tradingview-analysis-engine
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./data:/app/data
+      - tradingview-data:/app/data/persistent
+    environment:
+      - OHLCV_DB_PATH=${OHLCV_DB_PATH:-/app/data/ohlcv.db}
+      - MA_PERIOD=${MA_PERIOD:-20}
+      - CONFIDENCE_THRESHOLD=${CONFIDENCE_THRESHOLD:-0.75}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - WEBHOOK_RECEIVER_URL=http://webhook-receiver:8000
+    networks:
+      - tradingview-network
+    depends_on:
+      webhook-receiver:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Service 3: Email Notifier
+  # Sends email notifications based on analysis results
+  email-notifier:
+    build:
+      context: ./email-notifier
+      dockerfile: Dockerfile
+    container_name: tradingview-email-notifier
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./data:/app/data
+      - tradingview-data:/app/data/persistent
+    environment:
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASS=${SMTP_PASS}
+      - EMAIL_TO=${EMAIL_TO}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ANALYSIS_ENGINE_URL=http://analysis-engine:8001
+      - WEBHOOK_RECEIVER_URL=http://webhook-receiver:8000
+    networks:
+      - tradingview-network
+    depends_on:
+      webhook-receiver:
+        condition: service_healthy
+      analysis-engine:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Service 4: Scheduler
+  # Manages periodic tasks and scheduled analysis jobs
+  scheduler:
+    build:
+      context: ./scheduler
+      dockerfile: Dockerfile
+    container_name: tradingview-scheduler
+    ports:
+      - "8003:8003"
+    volumes:
+      - ./data:/app/data
+      - ./scheduler:/app
+      - tradingview-data:/app/data/persistent
+    environment:
+      - TIMEZONE=${TIMEZONE:-UTC}
+      - SCHEDULE_CONFIG=${SCHEDULE_CONFIG:-/app/config/schedule.json}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - WEBHOOK_RECEIVER_URL=http://webhook-receiver:8000
+      - ANALYSIS_ENGINE_URL=http://analysis-engine:8001
+      - EMAIL_NOTIFIER_URL=http://email-notifier:8002
+    networks:
+      - tradingview-network
+    depends_on:
+      webhook-receiver:
+        condition: service_healthy
+      analysis-engine:
+        condition: service_healthy
+      email-notifier:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Service 5: Integration Service
+  # Orchestrates webhook → analysis → email flow
+  integration-service:
+    build:
+      context: ./integration-service
+      dockerfile: Dockerfile
+    container_name: tradingview-integration-service
+    ports:
+      - "8004:8004"
+    volumes:
+      - ./data:/app/data
+      - tradingview-data:/app/data/persistent
+    environment:
+      - WEBHOOK_RECEIVER_URL=http://webhook-receiver:8000
+      - ANALYSIS_ENGINE_URL=http://analysis-engine:8001
+      - EMAIL_NOTIFIER_URL=http://email-notifier:8002
+      - SCHEDULER_URL=http://scheduler:8003
+      - CONFIDENCE_THRESHOLD=${CONFIDENCE_THRESHOLD:-0.75}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET}
+    networks:
+      - tradingview-network
+    depends_on:
+      webhook-receiver:
+        condition: service_healthy
+      analysis-engine:
+        condition: service_healthy
+      email-notifier:
+        condition: service_healthy
+      scheduler:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# Custom network for service communication
+networks:
+  tradingview-network:
+    driver: bridge
+    name: tradingview-network
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+# Named volumes for persistent data storage
+volumes:
+  tradingview-data:
+    driver: local

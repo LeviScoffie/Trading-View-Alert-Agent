@@ -1,0 +1,26 @@
+# TradingView Alert Agent Scheduler - Python Dependencies
+
+# Core scheduling
+APScheduler==3.10.4
+
+# Web framework for API
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+
+# Timezone support
+pytz==2024.1
+
+# HTTP client for service calls
+requests==2.31.0
+
+# Data validation
+pydantic==2.5.3
+
+# Database (for APScheduler job store)
+sqlalchemy==2.0.25
+
+# Async support (for FastAPI)
+python-multipart==0.0.6
+
+# Optional: For better JSON handling
+orjson==3.9.10

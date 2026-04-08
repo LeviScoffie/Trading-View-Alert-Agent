@@ -1,0 +1,60 @@
+# TradingView Alert Agent - Local Development Overrides
+# This file is automatically loaded by docker-compose when present
+# Use this for local development settings that shouldn't be committed
+
+version: "3.8"
+
+services:
+  webhook-receiver:
+    # Mount source code for hot-reload during development
+    volumes:
+      - ./data:/app/data
+      - tradingview-data:/app/data/persistent
+      - ./webhook-receiver/src:/app/src
+    # Override command for development (e.g., with hot-reload)
+    # command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    environment:
+      - LOG_LEVEL=DEBUG
+      - DEBUG=true
+
+  analysis-engine:
+    volumes:
+      - ./data:/app/data
+      - tradingview-data:/app/data/persistent
+      - ./analysis-engine/src:/app/src
+    environment:
+      - LOG_LEVEL=DEBUG
+      - DEBUG=true
+      - MA_PERIOD=10  # Shorter MA for faster testing
+
+  email-notifier:
+    volumes:
+      - ./data:/app/data
+      - tradingview-data:/app/data/persistent
+      - ./email-notifier/src:/app/src
+    environment:
+      - LOG_LEVEL=DEBUG
+      - DEBUG=true
+      - SMTP_HOST=smtp.mailtrap.io  # Use Mailtrap for testing
+      - SMTP_PORT=2525
+
+  scheduler:
+    volumes:
+      - ./data:/app/data
+      - ./scheduler:/app
+      - tradingview-data:/app/data/persistent
+      - ./scheduler/src:/app/src
+    environment:
+      - LOG_LEVEL=DEBUG
+      - DEBUG=true
+      - TIMEZONE=UTC
+
+# Development network settings
+networks:
+  tradingview-network:
+    driver: bridge
+
+# Development volumes
+volumes:
+  tradingview-data:
+    driver: local
