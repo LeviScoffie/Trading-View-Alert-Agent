@@ -1,0 +1,19 @@
+# Analysis Engine Dependencies
+# Python 3.9+
+
+# Data processing
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Data validation
+pydantic>=2.0.0
+
+# Database
+# sqlite3 is built into Python standard library
+
+# Testing
+pytest>=7.0.0
+pytest-cov>=4.0.0
+
+# Optional: for enhanced numerical operations
+scipy>=1.10.0

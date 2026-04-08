@@ -1,0 +1,54 @@
+# ── Environment & Secrets ─────────────────────────────────────────────────────
+.env
+*.env
+!*.env.example          # keep example files
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# ── Virtual Environments ──────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+.env/
+
+# ── Databases (runtime data — never commit) ───────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+data/
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Pytest / Coverage ─────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# ── Build / Distribution ──────────────────────────────────────────────────────
+dist/
+build/
+*.egg-info/
+*.egg
+
+# ── Docker ────────────────────────────────────────────────────────────────────
+# Keep docker-compose.yml and Dockerfiles — ignore local overrides
+docker-compose.override.yml
+
+# ── macOS ─────────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ── IDEs ──────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo

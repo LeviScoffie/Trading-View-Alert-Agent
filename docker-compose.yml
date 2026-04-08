@@ -1,0 +1,78 @@
+version: '3.8'
+
+# Shared named volume — both services read/write the same SQLite databases:
+#   /app/data/alerts.db   (webhook-receiver)
+#   /app/data/ohlcv.db    (analysis-engine, written by analysis_bridge.py)
+volumes:
+  tv_data:
+
+networks:
+  tv-agent-network:
+    driver: bridge
+
+services:
+
+  # ── Layer 1: Webhook Receiver ──────────────────────────────────────────────
+  webhook-receiver:
+    build:
+      context: ./webhook-receiver
+      dockerfile: Dockerfile
+    container_name: tv-webhook-receiver
+    ports:
+      - "8000:8000"
+    volumes:
+      - tv_data:/app/data
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "8000"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      DATABASE_PATH: "/app/data/alerts.db"
+      WEBHOOK_SECRET: "${WEBHOOK_SECRET:-}"
+      CONFIDENCE_THRESHOLD: "${CONFIDENCE_THRESHOLD:-0.75}"
+      # Analysis engine OHLCV DB path (shared volume)
+      EMAIL_NOTIFIER_OHLCV_DB_PATH: "/app/data/ohlcv.db"
+      # SMTP — forwarded to alert_processor → email_notifier
+      SMTP_HOST: "${SMTP_HOST:-smtp.gmail.com}"
+      SMTP_PORT: "${SMTP_PORT:-587}"
+      SMTP_USER: "${SMTP_USER}"
+      SMTP_PASSWORD: "${SMTP_PASSWORD}"
+      EMAIL_FROM: "${EMAIL_FROM}"
+      EMAIL_TO: "${EMAIL_TO}"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    networks:
+      - tv-agent-network
+
+  # ── Layer 3: Email Notifier (scheduled reports) ────────────────────────────
+  email-notifier:
+    build:
+      context: ./email-notifier
+      dockerfile: Dockerfile
+    container_name: tv-email-notifier
+    volumes:
+      - tv_data:/app/data
+    environment:
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      # Point at the shared databases
+      EMAIL_NOTIFIER_DB_PATH: "/app/data/alerts.db"
+      EMAIL_NOTIFIER_OHLCV_DB_PATH: "/app/data/ohlcv.db"
+      # SMTP
+      SMTP_HOST: "${SMTP_HOST:-smtp.gmail.com}"
+      SMTP_PORT: "${SMTP_PORT:-587}"
+      SMTP_USER: "${SMTP_USER}"
+      SMTP_PASSWORD: "${SMTP_PASSWORD}"
+      EMAIL_FROM: "${EMAIL_FROM}"
+      EMAIL_TO: "${EMAIL_TO}"
+      # Schedule (defaults: daily 17:00, weekly Sunday 17:00, monthly last-day 17:00)
+      DAILY_REPORT_HOUR: "${DAILY_REPORT_HOUR:-17}"
+      WEEKLY_REPORT_HOUR: "${WEEKLY_REPORT_HOUR:-17}"
+      MONTHLY_REPORT_HOUR: "${MONTHLY_REPORT_HOUR:-17}"
+      SCHEDULE_TIMEZONE: "${SCHEDULE_TIMEZONE:-America/New_York}"
+    restart: unless-stopped
+    networks:
+      - tv-agent-network
