@@ -69,10 +69,12 @@ async def store_alert(payload: Dict[str, Any]) -> Dict[str, Any]:
     return await _post_with_retry(url, payload, "webhook-receiver/store")
 
 
-async def analyze(symbol: str, timeframe: str) -> Dict[str, Any]:
+async def analyze(symbol: str, timeframe: str, candle: Dict[str, Any] | None = None) -> Dict[str, Any]:
     """FR-003: POST to analysis-engine /analyze to run analysis pipeline."""
     url = f"{settings.analysis_engine_url}/analyze"
-    payload = {"symbol": symbol, "timeframe": timeframe}
+    payload: Dict[str, Any] = {"symbol": symbol, "timeframe": timeframe}
+    if candle:
+        payload["candle"] = candle
     return await _post_with_retry(url, payload, "analysis-engine/analyze")
 
 

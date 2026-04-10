@@ -62,7 +62,13 @@ async def process_webhook(payload: WebhookPayload) -> WebhookResponse:
 
     # ── FR-003: Analyze ───────────────────────────────────────────────────────
     logger.info("[%s] Running analysis [%s]", payload.symbol, timeframe)
-    analysis = await clients.analyze(payload.symbol, timeframe)
+    candle = {
+        "time": payload.time,
+        "open": payload.open, "high": payload.high,
+        "low": payload.low, "close": payload.close,
+        "volume": payload.volume,
+    }
+    analysis = await clients.analyze(payload.symbol, timeframe, candle=candle)
 
     if "_error" in analysis or not analysis:
         result.analysis_status = "failed"

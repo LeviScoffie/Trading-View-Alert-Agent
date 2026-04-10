@@ -89,7 +89,7 @@ class ContextEngine:
             confidence_scores.append(rule4_score)
             # Sentiment from multi-timeframe
             if multi_timeframe_context:
-                weekly = multi_timeframe_context.get('weekly', {})
+                weekly = multi_timeframe_context.get('weekly') or {}
                 if weekly.get('trend') == TrendDirection.BULLISH:
                     sentiments.append(TrendDirection.BULLISH)
                 elif weekly.get('trend') == TrendDirection.BEARISH:
