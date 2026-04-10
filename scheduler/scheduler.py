@@ -15,8 +15,13 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.events import (
     EVENT_JOB_EXECUTED, EVENT_JOB_ERROR, EVENT_JOB_MISSED,
-    JobExecutionEvent, JobErrorEvent, JobMissedEvent
+    JobExecutionEvent, JobEvent
 )
+
+# In newer APScheduler versions, specific event types are not directly available
+# Using JobEvent as base type for type hints
+JobErrorEvent = JobEvent
+JobMissedEvent = JobEvent
 
 from config import (
     TIMEZONE, SCHEDULE_CONFIG, JOB_STORE_CONFIG,
