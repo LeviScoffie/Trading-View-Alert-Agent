@@ -1,46 +1,138 @@
 # TradingView Alert Agent — Progress Tracker
 
 ## Project Overview
-Build an intelligent TradingView alert system that learns Scoffie's chart-reading behavior and provides contextual analysis via email.
+Build an intelligent TradingView alert system that learns Scoffie's chart-reading behaviour and provides contextual analysis via email.
+
+**Current Version:** 2.0.0 — 5-service microservice architecture with central integration layer.
 
 ---
 
-## Components Status
+## Component Status
 
-| # | Component | Status | Date Completed | Notes |
-|---|-----------|--------|----------------|-------|
-| 1 | **Webhook Receiver** | ✅ COMPLETE | 2026-04-08 | FastAPI + SQLite + Docker + HMAC signatures |
-| 2 | **Analysis Engine** | ✅ COMPLETE | 2026-04-08 | 12 patterns, 20MA, context rules, confidence scoring |
-| 3 | **Behavior Tracking** | ✅ COMPLETE | 2026-04-08 | Alert enrichment + `/log` endpoint (no extension needed) |
-| 4 | **Email Notifier** | ✅ COMPLETE | 2026-04-08 | APScheduler, HTML templates, SMTP/SendGrid/SES support, real-time analysis integration |
-| 5 | **Scheduler** | ✅ COMPLETE | 2026-04-08 | Built into Email Notifier (APScheduler cron jobs) |
-| 6 | **Documentation** | ✅ COMPLETE | 2026-04-08 | DESIGN.md + PROGRESS.md + component docs |
+| # | Component | Status | Port | Date | Notes |
+|---|-----------|--------|------|------|-------|
+| 1 | **Webhook Receiver** | ✅ COMPLETE | 8000 | 2026-04-08 | Storage-only in v2.0; analysis pipeline removed |
+| 2 | **Analysis Engine** | ✅ COMPLETE | 8001 | 2026-04-09 | Promoted from embedded library to standalone microservice |
+| 3 | **Email Notifier** | ✅ COMPLETE | 8002 | 2026-04-08 | Moved from port 8001; added `/send-alert` endpoint |
+| 4 | **Scheduler** | ✅ COMPLETE | 8003 | 2026-04-08 | Updated EMAIL_NOTIFIER_URL to port 8002 |
+| 5 | **Integration Service** | ✅ COMPLETE | 8004 | 2026-04-09 | New in v2.0 — central orchestrator |
+| 6 | **Documentation** | ✅ COMPLETE | — | 2026-04-09 | Updated for v2.0 architecture |
 
 ---
 
-## Webhook Receiver Details
+## Integration Service (v2.0 — NEW)
+
+**Location:** `integration-service/`
+
+**Files:**
+- ✅ `integration_service.py` — FastAPI app (4 endpoints)
+- ✅ `orchestrator.py` — Core pipeline: store → analyze → persist → email
+- ✅ `clients.py` — Async httpx wrappers with 3-attempt exponential backoff
+- ✅ `models.py` — Pydantic request/response models
+- ✅ `config.py` — pydantic-settings configuration
+- ✅ `Dockerfile` — python:3.11-slim, port 8004
+- ✅ `requirements.txt` — fastapi, uvicorn, httpx, pydantic-settings
+
+**Endpoints:**
+- `POST /webhook` — TradingView entry point; runs full pipeline
+- `GET /health` — Aggregate health of all 4 downstream services
+- `GET /status/{alert_id}` — Alert processing status
+- `POST /trigger-analysis` — Manual analysis without webhook alert
+
+**Verified:** ✅ End-to-end test `{"status":"processed","alert_id":4}` — all services green
+
+---
+
+## Analysis Engine (v2.0 — Promoted to Microservice)
+
+**Location:** `analysis-engine/`
+
+**New Files:**
+- ✅ `api.py` — FastAPI wrapper with `POST /analyze` endpoint
+
+**Updated Files:**
+- ✅ `requirements.txt` — added fastapi, uvicorn, pydantic-settings
+- ✅ `Dockerfile` — now runs `python api.py` instead of pytest
+
+**Existing Files (unchanged):**
+- ✅ `analysis_engine.py` — Main orchestrator
+- ✅ `pattern_detector.py` — 12 candlestick patterns
+- ✅ `ma_analyzer.py` — 20MA calculations
+- ✅ `context_engine.py` — 5 context rules + confidence scoring
+- ✅ `multi_timeframe.py` — 1W/1D/4H/1H analysis
+- ✅ `database.py` — OHLCV SQLite storage
+- ✅ `models.py` — Pydantic data models
+
+**Verified:** ✅ `POST /analyze` returns valid JSON; health check passes
+
+---
+
+## Webhook Receiver (v2.0 — Storage Only)
 
 **Location:** `webhook-receiver/`
 
-**Files:**
-- ✅ `webhook_receiver.py` — FastAPI app (~170 lines)
-- ✅ `database.py` — SQLite operations (~180 lines)
-- ✅ `config.py` — Environment config (~35 lines)
-- ✅ `Dockerfile` — Container setup (~35 lines)
-- ✅ `requirements.txt` — Dependencies
-- ✅ `README.md` — Documentation (~200 lines)
-- ✅ `.env.example` — Environment template
+**Changes from v1.x:**
+- ✅ Removed `alert_processor.py` background task from `/webhook` endpoint
+- ✅ Removed `POST /analyze` endpoint (analysis is now analysis-engine's job)
+- ✅ Added `POST /analysis/{alert_id}` — persist analysis result from integration-service
+- ✅ Reverted Dockerfile to simple build (no analysis-engine copy needed)
 
-**Features:**
-- POST /webhook endpoint
-- SQLite storage with indexing
-- Query endpoints: /alerts, /alerts/{symbol}, /stats
-- Docker containerization
-- Request logging
+**Endpoints:**
+- `POST /webhook` — store alert (storage-only, returns `alert_id`)
+- `POST /analysis/{alert_id}` — persist analysis result
+- `POST /webhook/tradingview` — alternative endpoint
+- `POST /log` — manual behaviour logging
+- `GET /logs`, `/logs/{symbol}`, `/attention` — behaviour queries
+- `GET /alerts`, `/alerts/{symbol}` — alert queries
+- `GET /analysis`, `/analysis/{symbol}` — analysis result queries
+- `GET /stats`, `/health`
 
-**Testing Status:** ✅ CODE VALIDATED — Runtime testing pending (requires pip/Docker environment)
+---
 
-**Test Report:** See `webhook-receiver/TEST_REPORT.md`
+## Email Notifier (v2.0 — Port Changed, New Endpoint)
+
+**Location:** `email-notifier/`
+
+**Changes from v1.x:**
+- ✅ Port changed from 8001 → **8002**
+- ✅ Added `send_alert_email()` method on `EmailNotifier` class
+- ✅ Added `POST /send-alert` endpoint (called by integration-service)
+
+**All existing report endpoints unchanged:**
+- `POST /reports/daily`, `/reports/weekly`, `/reports/monthly`
+- `GET /health`
+
+---
+
+## Scheduler (v2.0 — Bug Fixes)
+
+**Location:** `scheduler/`
+
+**Changes from v1.x:**
+- ✅ Fixed `ImportError`: removed non-existent `JobErrorEvent`, `JobMissedEvent` imports (APScheduler 3.x uses `JobExecutionEvent` for all event types)
+- ✅ Fixed `AttributeError`: `add_job()` return value used instead of `get_job()` for next_run_time
+- ✅ Updated `EMAIL_NOTIFIER_URL` → `http://email-notifier:8002`
+
+**5 scheduled jobs running:**
+- Daily report: 5:00 PM EST
+- Weekly report: Sunday 5:00 PM EST
+- Monthly report: 1st of month 5:00 PM EST
+- Data cleanup: Sunday 3:00 AM EST
+- Health check: hourly
+
+---
+
+## Architecture Changes: v1.x → v2.0
+
+| Aspect | v1.x | v2.0 |
+|--------|------|------|
+| TradingView target | port 8000 | **port 8004** |
+| Services | 3 containers | **5 containers** |
+| Analysis engine | Embedded library in webhook-receiver | **Standalone microservice :8001** |
+| Email notifier port | 8001 | **8002** |
+| Orchestration | alert_processor.py background task | **Integration service pipeline** |
+| Analysis trigger | Per-alert background task | **Synchronous HTTP call from integration-service** |
+| Error handling | Best-effort in background | **Retried, logged, partial-failure response** |
 
 ---
 
@@ -48,84 +140,28 @@ Build an intelligent TradingView alert system that learns Scoffie's chart-readin
 
 | Setting | Value |
 |---------|-------|
-| **Integration** | TradingView webhooks + behavior tracking (no extension) |
-| **Behaviors Tracked** | Alert payloads (`{{interval}}`), manual `/log` endpoint, conviction tags |
-| **Analysis** | Trend continuation/reversal, candle patterns, 20MA distance |
-| **Timing** | Scheduled (daily close, weekly close Sundays) |
-| **Timezone** | EST/EDT (New York) |
-| **Delivery** | Email |
-| **Coins** | 20+ assets (SPX500, BTCUSD, ETHUSD, alts, etc.) |
-
----
-
-## Architecture
-
-See `DESIGN.md` for complete system architecture, data flow, and design decisions.
-
-**Key Decision:** No browser extension required. Behavior tracking via:
-1. TradingView alert enrichment (`{{interval}}`, conviction tags)
-2. Manual `/log` endpoint with terminal alias
-
-## Email Notifier Details
-
-**Location:** `email-notifier/`
-
-**Files:**
-- ✅ `email_notifier.py` — Main scheduler and sender (~280 lines)
-- ✅ `templates.py` — HTML email templates with Jinja2 (~500 lines)
-- ✅ `report_generator.py` — Database queries, OHLCV analysis, pattern detection (~450 lines)
-- ✅ `config.py` — Email and schedule configuration (~100 lines)
-- ✅ `Dockerfile` — Container setup with health checks (~25 lines)
-- ✅ `requirements.txt` — Dependencies
-- ✅ `README.md` — Usage documentation (~250 lines)
-- ✅ `.env.example` — Environment template
-
-**Features:**
-- **Scheduling:** APScheduler with cron-like triggers
-  - Daily Close: 5:00 PM EST — Daily patterns, MA20 status
-  - Weekly Close: Sunday 5:00 PM EST — Weekly engulfing, multi-TF analysis
-  - Monthly Close: Last day 5:00 PM EST — Monthly trend, key levels
-- **HTML Email Templates:**
-  - Dark-themed professional design
-  - Header with symbol/logo
-  - Pattern badges with confidence scores (color-coded)
-  - MA20 status with visual indicator (green/red dot)
-  - Context reasoning section
-  - Multi-timeframe alignment grid (1W/1D/4H/1H)
-  - Actionable recommendations (5 levels)
-  - Recent alerts list
-  - Plain text fallback
-- **Email Providers:** SMTP (Gmail), SendGrid, AWS SES
-- **Real-Time Analysis Integration:**
-  - Fetches OHLCV data from analysis-engine database
-  - Detects patterns (engulfing, doji, hammer, shooting star)
-  - Calculates MA20 with trend/slope
-  - Multi-timeframe analysis
-  - Context scoring with confidence calculation
-- **Operational:** Timezone-aware, retry logic, health checks
-
-**Analysis Engine Integration:**
-The report generator connects to the analysis-engine OHLCV database to provide real market data in reports:
-- Pattern detection on live price data
-- MA20 calculations with distance percentages
-- Multi-timeframe confluence analysis
-- Context-aware recommendations
-
-**Testing Status:** ✅ CODE VALIDATED — Ready for integration testing
+| TradingView entry point | `POST http://your-server:8004/webhook` |
+| Patterns detected | 12 candlestick patterns |
+| Analysis components | Pattern detection + MA20 + context rules + multi-TF |
+| Immediate alerts | Email when confidence ≥ `CONFIDENCE_THRESHOLD` (default 0.75) |
+| Scheduled reports | Daily 5PM EST, Weekly Sun 5PM, Monthly last day 5PM |
+| Email providers | SMTP (Gmail), SendGrid, AWS SES |
+| Data retention | 90 days (auto-pruned by scheduler) |
+| Assets | 20+ (SPX500, BTCUSD, ETHUSD, alts, DeFi tokens) |
 
 ---
 
 ## Next Steps
 
-1. ✅ Webhook Receiver — Complete
-2. ✅ Analysis Engine — Complete
-3. ✅ Behavior Tracking — Complete
-4. ✅ Email Notifier — Complete
-5. ✅ Scheduler — Complete (integrated into Email Notifier)
-6. ⏳ Integration testing (end-to-end email delivery)
-7. ⏳ Deploy to production
-8. ⏳ Configure TradingView webhooks
+1. ✅ Integration Service — Complete
+2. ✅ Analysis Engine microservice — Complete
+3. ✅ End-to-end pipeline verified
+4. ✅ All services healthy
+5. ⏳ Feed real TradingView OHLCV data to build up ohlcv.db for meaningful analysis
+6. ⏳ Deploy to production VPS
+7. ⏳ Configure TradingView webhooks for 20+ assets pointing to port 8004
+8. ⏳ Integration tests (automated end-to-end coverage)
 
 ---
 
-*Last updated: 2026-04-08 11:01 UTC*
+*Last updated: 2026-04-09 | Version: 2.0.0*

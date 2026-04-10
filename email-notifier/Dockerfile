@@ -29,9 +29,12 @@ RUN mkdir -p /app/data
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
-# Default command - run scheduler
-CMD ["python", "email_notifier.py"]
+# Install curl for healthcheck
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+
+# Default command - run FastAPI via uvicorn (scheduler triggers reports via HTTP)
+CMD ["uvicorn", "email_notifier:app", "--host", "0.0.0.0", "--port", "8002"]
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import sqlite3; sqlite3.connect('/app/data/health.db').execute('SELECT 1').fetchone()" || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD curl -f http://localhost:8002/health || exit 1

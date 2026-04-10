@@ -1,8 +1,17 @@
-version: '3.8'
 
-# Shared named volume — both services read/write the same SQLite databases:
-#   /app/data/alerts.db   (webhook-receiver)
-#   /app/data/ohlcv.db    (analysis-engine, written by analysis_bridge.py)
+
+# Shared named volume — all services share the same SQLite databases:
+#   /app/data/alerts.db   (webhook-receiver writes; email-notifier reads)
+#   /app/data/ohlcv.db    (analysis-engine reads/writes; shared via volume)
+#   /data/scheduler.db    (scheduler writes; mounted at /data not /app/data)
+#
+# Service ports (matching PRD):
+#   8000 — webhook-receiver   (alert storage + analysis result persistence)
+#   8001 — analysis-engine    (pattern detection, MA20, multi-timeframe)
+#   8002 — email-notifier     (immediate alerts + scheduled reports)
+#   8003 — scheduler          (cron job orchestration)
+#   8004 — integration-service (PRIMARY entry point for TradingView)
+
 volumes:
   tv_data:
 
@@ -12,7 +21,7 @@ networks:
 
 services:
 
-  # ── Layer 1: Webhook Receiver ──────────────────────────────────────────────
+  # ── Webhook Receiver (alert storage + analysis result persistence) ──────────
   webhook-receiver:
     build:
       context: ./webhook-receiver
@@ -29,18 +38,9 @@ services:
       DATABASE_PATH: "/app/data/alerts.db"
       WEBHOOK_SECRET: "${WEBHOOK_SECRET:-}"
       CONFIDENCE_THRESHOLD: "${CONFIDENCE_THRESHOLD:-0.75}"
-      # Analysis engine OHLCV DB path (shared volume)
-      EMAIL_NOTIFIER_OHLCV_DB_PATH: "/app/data/ohlcv.db"
-      # SMTP — forwarded to alert_processor → email_notifier
-      SMTP_HOST: "${SMTP_HOST:-smtp.gmail.com}"
-      SMTP_PORT: "${SMTP_PORT:-587}"
-      SMTP_USER: "${SMTP_USER}"
-      SMTP_PASSWORD: "${SMTP_PASSWORD}"
-      EMAIL_FROM: "${EMAIL_FROM}"
-      EMAIL_TO: "${EMAIL_TO}"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -48,31 +48,126 @@ services:
     networks:
       - tv-agent-network
 
-  # ── Layer 3: Email Notifier (scheduled reports) ────────────────────────────
+  # ── Analysis Engine (pattern detection microservice) ───────────────────────
+  analysis-engine:
+    build:
+      context: ./analysis-engine
+      dockerfile: Dockerfile
+    container_name: tv-analysis-engine
+    ports:
+      - "8001:8001"
+    volumes:
+      - tv_data:/app/data
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "8001"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      OHLCV_DB_PATH: "/app/data/ohlcv.db"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    networks:
+      - tv-agent-network
+
+  # ── Email Notifier (immediate alerts + scheduled reports) ──────────────────
   email-notifier:
     build:
       context: ./email-notifier
       dockerfile: Dockerfile
     container_name: tv-email-notifier
+    ports:
+      - "8002:8002"
     volumes:
       - tv_data:/app/data
     environment:
       LOG_LEVEL: "${LOG_LEVEL:-INFO}"
-      # Point at the shared databases
       EMAIL_NOTIFIER_DB_PATH: "/app/data/alerts.db"
       EMAIL_NOTIFIER_OHLCV_DB_PATH: "/app/data/ohlcv.db"
-      # SMTP
       SMTP_HOST: "${SMTP_HOST:-smtp.gmail.com}"
       SMTP_PORT: "${SMTP_PORT:-587}"
       SMTP_USER: "${SMTP_USER}"
       SMTP_PASSWORD: "${SMTP_PASSWORD}"
       EMAIL_FROM: "${EMAIL_FROM}"
       EMAIL_TO: "${EMAIL_TO}"
-      # Schedule (defaults: daily 17:00, weekly Sunday 17:00, monthly last-day 17:00)
       DAILY_REPORT_HOUR: "${DAILY_REPORT_HOUR:-17}"
       WEEKLY_REPORT_HOUR: "${WEEKLY_REPORT_HOUR:-17}"
       MONTHLY_REPORT_HOUR: "${MONTHLY_REPORT_HOUR:-17}"
       SCHEDULE_TIMEZONE: "${SCHEDULE_TIMEZONE:-America/New_York}"
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    networks:
+      - tv-agent-network
+
+  # ── Integration Service (PRIMARY entry point — orchestrates full pipeline) ──
+  integration-service:
+    build:
+      context: ./integration-service
+      dockerfile: Dockerfile
+    container_name: tv-integration-service
+    ports:
+      - "8004:8004"
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "8004"
+      WEBHOOK_RECEIVER_URL: "http://webhook-receiver:8000"
+      ANALYSIS_ENGINE_URL: "http://analysis-engine:8001"
+      EMAIL_NOTIFIER_URL: "http://email-notifier:8002"
+      SCHEDULER_URL: "http://scheduler:8003"
+      CONFIDENCE_THRESHOLD: "${CONFIDENCE_THRESHOLD:-0.75}"
+      REQUEST_TIMEOUT_SECONDS: "10"
+      MAX_RETRIES: "3"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    depends_on:
+      - webhook-receiver
+      - analysis-engine
+      - email-notifier
+    networks:
+      - tv-agent-network
+
+  # ── Scheduler (cron job orchestration — report timing + maintenance) ────────
+  scheduler:
+    build:
+      context: ./scheduler
+      dockerfile: Dockerfile
+    container_name: tv-scheduler
+    ports:
+      - "8003:8003"
+    volumes:
+      - tv_data:/data
+    environment:
+      SCHEDULER_LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      SCHEDULER_API_HOST: "0.0.0.0"
+      SCHEDULER_API_PORT: "8003"
+      SCHEDULER_DB_PATH: "/data/scheduler.db"
+      ALERTS_DB_PATH: "/data/alerts.db"
+      WEBHOOK_RECEIVER_URL: "http://webhook-receiver:8000"
+      EMAIL_NOTIFIER_URL: "http://email-notifier:8002"
+      SCHEDULE_TIMEZONE: "${SCHEDULE_TIMEZONE:-America/New_York}"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    depends_on:
+      - webhook-receiver
+      - email-notifier
     networks:
       - tv-agent-network

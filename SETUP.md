@@ -1,253 +1,399 @@
-
-# TradingView Alert Agent - Setup Guide
+# TradingView Alert Agent — Setup Guide
 
 ## Prerequisites
 
 - Docker and Docker Compose
-- Python 3.11+ (for local development)
-- TradingView account (free or paid)
+- Python 3.11+ (local development only)
+- TradingView account (Essential+ for webhooks)
 - SMTP email credentials (Gmail recommended)
+
+---
 
 ## Quick Start
 
 ### 1. Clone and Configure
 
 ```bash
-cd /home/node/.openclaw/workspace/projects/tradingview-alert-agent
+git clone https://github.com/LeviScoffie/Trading-View-Alert-Agent.git
+cd tradingview-alert-agent
 
-# Copy environment template
 cp .env.example .env
-
-# Edit with your credentials
-nano .env
+nano .env   # Add SMTP credentials (see section below)
 ```
 
-### 2. Configure Email (Required for notifications)
+### 2. Configure Email (Required)
 
-**For Gmail:**
+**Gmail:**
 1. Go to https://myaccount.google.com/apppasswords
 2. Generate an app password for "Mail"
 3. Add to `.env`:
-   ```
-   SMTP_USER=your_email@gmail.com
-   SMTP_PASS=your_16_char_app_password
-   EMAIL_TO=your_email@gmail.com
-   ```
-
-**For other providers:**
-- Update `SMTP_HOST` and `SMTP_PORT` accordingly
-- Ensure SMTP authentication is enabled
-
-### 3. Start the Service
 
 ```bash
-# Build and start
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=your_email@gmail.com
+SMTP_PASSWORD=your_16_char_app_password
+EMAIL_FROM=your_email@gmail.com
+EMAIL_TO=your_email@gmail.com
+```
+
+### 3. Start All Services
+
+```bash
 docker-compose up -d
 
-# Check logs
-docker-compose logs -f
+# Single health check covers all 5 services
+curl http://localhost:8004/health
+```
 
-# Verify health
-curl http://localhost:8000/health
+Expected:
+```json
+{
+  "status": "healthy",
+  "services": [
+    {"name": "webhook-receiver", "status": "healthy", "response_time_ms": 12},
+    {"name": "analysis-engine",  "status": "healthy", "response_time_ms": 45},
+    {"name": "email-notifier",   "status": "healthy", "response_time_ms": 8},
+    {"name": "scheduler",        "status": "healthy", "response_time_ms": 6}
+  ]
+}
+```
+
+### 4. Configure TradingView
+
+**Webhook URL** (point all your TradingView alerts here):
+```
+http://your-server-ip:8004/webhook
+```
+
+**Message template** (paste into the TradingView alert "Message" box):
+```json
+{
+  "symbol":   "{{ticker}}",
+  "open":     {{open}},
+  "high":     {{high}},
+  "low":      {{low}},
+  "close":    {{close}},
+  "volume":   {{volume}},
+  "time":     "{{time}}",
+  "interval": "{{interval}}",
+  "message":  "{{strategy.order.action}}"
+}
+```
+
+> **Note:** Webhook alerts require TradingView Essential+ plan.
+
+**Alert naming convention** (encodes your conviction into behaviour tracking):
+```
+BTCUSD - high conviction - weekly engulfing
+MORPHOUSDT - watching - support test
+ETHUSD - set and forget - 200MA
+```
+
+### 5. Test the System
+
+**Send a test webhook:**
+```bash
+curl -s -X POST http://localhost:8004/webhook \
+  -H "Content-Type: application/json" \
+  -d '{"symbol":"BTCUSD","price":65000,"timeframe":"1D","message":"Test alert"}' \
+  | python3 -m json.tool
 ```
 
 Expected response:
 ```json
-{"status": "healthy", "timestamp": "...", "version": "1.0.0"}
+{
+  "status": "processed",
+  "alert_id": 1,
+  "symbol": "BTCUSD",
+  "confidence": 0.0,
+  "email_sent": false,
+  "processing_time_ms": 85,
+  "services": {
+    "webhook": "success",
+    "analysis": "success",
+    "email": "skipped"
+  }
+}
 ```
 
-### 4. Install Browser Extension
+> **Note:** `confidence: 0.0` is expected on a fresh install — the analysis engine needs OHLCV history to detect patterns. Confidence rises as alert data accumulates.
 
-**Chrome/Edge:**
-1. Open `chrome://extensions/`
-2. Enable "Developer mode" (top right)
-3. Click "Load unpacked"
-4. Select the `extension/` folder
-5. Extension icon should appear in toolbar
-
-**Configure Extension:**
-1. Click extension icon
-2. Set Backend URL to `http://localhost:8000` (or your VPS URL)
-3. Verify "Active - Tracking enabled" status
-
-### 5. Configure TradingView Webhooks
-
-**Create Alert in TradingView:**
-1. Open any chart on TradingView
-2. Click "Alert" button (clock icon) or press `Alt+A`
-3. Configure alert conditions (price, indicators, etc.)
-4. In "Webhook URL" field, enter:
-   ```
-   http://your-vps-ip:8000/webhook/tradingview
-   ```
-5. In "Message" field, use this JSON template:
-   ```json
-   {
-     "symbol": "{{ticker}}",
-     "price": {{close}},
-     "timeframe": "{{interval}}",
-     "alert_name": "{{alertname}}",
-     "message": "Alert triggered for {{ticker}}"
-   }
-   ```
-6. Enable "Webhook" checkbox
-7. Click "Create"
-
-**Note:** Webhook alerts require TradingView paid plan (Essential+).
-
-### 6. Test the System
-
-**Test webhook endpoint:**
+**Manually trigger a daily report:**
 ```bash
-curl -X POST http://localhost:8000/webhook/tradingview \
-  -H "Content-Type: application/json" \
-  -d '{
-    "symbol": "BTCUSD",
-    "price": 65000,
-    "timeframe": "1D",
-    "alert_name": "Test Alert",
-    "message": "Test webhook"
-  }'
+curl -X POST http://localhost:8002/reports/daily
 ```
 
-**Test daily report manually:**
+**Manually trigger a job via scheduler:**
 ```bash
-curl -X POST http://localhost:8000/api/reports/daily
+curl http://localhost:8003/jobs                          # list job IDs
+curl -X POST http://localhost:8003/jobs/daily_report/trigger
 ```
 
-**Check database:**
+**Check recent alerts:**
 ```bash
-docker-compose exec tradingview-agent sqlite3 /data/tradingview_agent.db "SELECT * FROM alerts LIMIT 5;"
+curl http://localhost:8000/alerts | python3 -m json.tool
 ```
 
-## VPS Deployment (Hetzner)
+**Check analysis results:**
+```bash
+curl http://localhost:8000/analysis | python3 -m json.tool
+curl http://localhost:8000/analysis/BTCUSD | python3 -m json.tool
+```
+
+**Query SQLite directly:**
+```bash
+docker-compose exec webhook-receiver sqlite3 /app/data/alerts.db \
+  "SELECT id, symbol, price, received_at FROM alerts ORDER BY received_at DESC LIMIT 5;"
+```
+
+---
+
+## Service Ports
+
+| Port | Service | Expose Publicly? |
+|------|---------|-----------------|
+| 8004 | integration-service | **Yes** — TradingView webhook target |
+| 8000 | webhook-receiver | No (internal) |
+| 8001 | analysis-engine | No (internal) |
+| 8002 | email-notifier | No (internal) |
+| 8003 | scheduler | No (internal) |
+
+---
+
+## VPS Deployment (Hetzner / DigitalOcean)
 
 ### 1. Transfer Files
 
 ```bash
-# From your local machine
-scp -r projects/tradingview-alert-agent rodgers@your-vps-ip:/home/rodgers/.openclaw/workspace/projects/
+scp -r tradingview-alert-agent user@your-vps-ip:/home/user/
 ```
 
-### 2. Configure for Public Access
+### 2. Configure for Production
 
-**Update `.env`:**
-```
-WEBHOOK_HOST=0.0.0.0
-```
-
-**Open firewall port:**
 ```bash
-sudo ufw allow 8000/tcp
+# .env — set a strong webhook secret
+WEBHOOK_SECRET=your-strong-random-secret
+```
+
+**Open only port 8004 on the firewall:**
+```bash
+sudo ufw allow 8004/tcp
 sudo ufw reload
 ```
 
-### 3. Start on VPS
+### 3. Start
 
 ```bash
-cd /home/rodgers/.openclaw/workspace/projects/tradingview-alert-agent
+cd /home/user/tradingview-alert-agent
 docker-compose up -d
 ```
 
-### 4. Configure TradingView with VPS URL
+### 4. Optional — HTTPS with nginx + certbot
 
-```
-Webhook URL: http://your-vps-ip:8000/webhook/tradingview
+```bash
+sudo apt install nginx certbot python3-certbot-nginx
+sudo certbot --nginx -d your-domain.com
 ```
 
-**Optional - Use domain with HTTPS:**
-1. Point domain to VPS IP
-2. Install nginx + certbot
-3. Reverse proxy to port 8000
-4. Update TradingView webhook to `https://your-domain.com/webhook/tradingview`
+nginx config (proxy only port 8004):
+```nginx
+server {
+    server_name your-domain.com;
+    location / {
+        proxy_pass http://localhost:8004;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
+```
+
+TradingView webhook URL:
+```
+https://your-domain.com/webhook
+```
+
+---
 
 ## Local Development
 
 ```bash
-# Create virtual environment
+# Develop a single service locally
 python -m venv venv
 source venv/bin/activate
 
-# Install dependencies
-pip install -r backend/requirements.txt
+# webhook-receiver
+pip install -r webhook-receiver/requirements.txt
+cd webhook-receiver && uvicorn webhook_receiver:app --reload --port 8000
 
-# Run with hot reload
-cd backend
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+# analysis-engine
+pip install -r analysis-engine/requirements.txt
+cd analysis-engine && uvicorn api:app --reload --port 8001
+
+# integration-service
+pip install -r integration-service/requirements.txt
+cd integration-service && uvicorn integration_service:app --reload --port 8004
 ```
+
+---
+
+## Manual Behaviour Logging
+
+Add this alias to `~/.zshrc` or `~/.bashrc`:
+
+```bash
+alias tv='function _tv(){ curl -s -X POST "http://localhost:8000/log" \
+  -H "Content-Type: application/json" \
+  -d "{\"symbol\":\"$1\",\"timeframe\":\"$2\",\"note\":\"$3\"}" | python3 -m json.tool; }; _tv'
+```
+
+Usage:
+```bash
+tv BTCUSD 4H "accumulation at support"
+tv MORPHOUSDT 1D "watching weekly close"
+```
+
+---
 
 ## Troubleshooting
 
-### Service won't start
-```bash
-# Check logs
-docker-compose logs tradingview-agent
+### Services won't start
 
-# Common issues:
-# - Port 8000 already in use: change WEBHOOK_PORT
-# - Database permission: chmod 755 ./data
+```bash
+docker-compose logs integration-service
+docker-compose logs analysis-engine
+docker-compose logs webhook-receiver
+docker-compose logs email-notifier
+docker-compose logs scheduler
+
+# Port conflict
+lsof -i :8004
 ```
 
 ### Emails not sending
+
 ```bash
 # Test SMTP connection
-docker-compose exec tradingview-agent python -c "
+docker-compose exec email-notifier python -c "
 import smtplib
-server = smtplib.SMTP('smtp.gmail.com', 587)
-server.starttls()
-server.login('your_email@gmail.com', 'your_app_password')
+s = smtplib.SMTP('smtp.gmail.com', 587)
+s.starttls()
+s.login('your_email@gmail.com', 'your_app_password')
 print('SMTP OK')
+s.quit()
 "
+
+# Trigger test report
+curl -X POST http://localhost:8002/reports/daily
 ```
 
-### Extension not tracking
-1. Open TradingView chart
-2. Open browser DevTools (F12)
-3. Check Console for `[TV Agent]` messages
-4. Verify extension is enabled in `chrome://extensions/`
+### Webhook not processing
 
-### Webhook not receiving alerts
-1. Verify TradingView alert has webhook enabled
-2. Check webhook URL is correct (no trailing slash)
-3. Verify JSON message format is valid
-4. Check firewall allows inbound on port 8000
+```bash
+# Check integration service pipeline
+curl -s -X POST http://localhost:8004/webhook \
+  -H "Content-Type: application/json" \
+  -d '{"symbol":"TEST","price":100}' | python3 -m json.tool
+
+# The response shows per-service status
+# services.webhook: "success" → alert was stored
+# services.analysis: "success" → analysis ran
+# services.email: "skipped" → confidence below threshold (expected)
+```
+
+### Analysis always returns confidence 0.0
+
+This is expected on a fresh install. The analysis engine needs OHLCV history in `ohlcv.db` to detect patterns. Confidence rises as TradingView alert payloads include OHLCV candle data that gets stored. Use the full template with `{{open}}`, `{{high}}`, `{{low}}`, `{{close}}`, `{{volume}}` fields to feed data to the engine.
+
+### Scheduler not triggering reports
+
+```bash
+curl http://localhost:8003/jobs       # view next run times
+curl http://localhost:8003/dashboard  # system overview
+
+# Manually trigger
+curl -X POST http://localhost:8003/jobs/daily_report/trigger
+```
+
+---
 
 ## Maintenance
 
 ### View logs
+
 ```bash
-docker-compose logs -f tradingview-agent
+docker-compose logs -f                      # all services
+docker-compose logs -f integration-service  # specific service
 ```
 
-### Restart service
+### Restart a service
+
 ```bash
-docker-compose restart
+docker-compose restart integration-service
 ```
 
-### Backup database
+### Backup databases
+
 ```bash
-cp ./data/tradingview_agent.db ./data/tradingview_agent.db.backup.$(date +%Y%m%d)
+mkdir -p backups
+docker run --rm \
+  -v tradingview-alert-agent_tv_data:/data \
+  -v $(pwd)/backups:/backup \
+  alpine sh -c "cp /data/*.db /backup/ && echo 'Backup done'"
 ```
 
-### Update service
+### Rebuild after code changes
+
 ```bash
-docker-compose pull
-docker-compose up -d --force-recreate
+docker-compose build
+docker-compose up -d
 ```
 
-### Stop service
+### Stop everything
+
 ```bash
 docker-compose down
 ```
 
-## Next Steps
+---
 
-1. **Create TradingView alerts** for your 20+ tracked assets
-2. **Customize analysis thresholds** in `.env` if needed
-3. **Monitor first daily report** to verify email delivery
-4. **Review browser extension data** in popup stats
-5. **Expand pattern detection** as needed (see DESIGN.md)
+## Environment Variables Reference
+
+```bash
+# ── Required ──────────────────────────────────────────────────────────
+SMTP_USER=your_email@gmail.com
+SMTP_PASSWORD=your_16_char_app_password
+EMAIL_FROM=your_email@gmail.com
+EMAIL_TO=recipient@example.com
+
+# ── Analysis ──────────────────────────────────────────────────────────
+CONFIDENCE_THRESHOLD=0.75    # Email sent when confidence >= this (0–1)
+
+# ── Schedule (defaults shown) ─────────────────────────────────────────
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+DAILY_REPORT_HOUR=17
+WEEKLY_REPORT_HOUR=17
+MONTHLY_REPORT_HOUR=17
+SCHEDULE_TIMEZONE=America/New_York
+
+# ── Security (recommended for production) ─────────────────────────────
+WEBHOOK_SECRET=your-hmac-secret
+
+# ── Logging ───────────────────────────────────────────────────────────
+LOG_LEVEL=INFO
+```
 
 ---
 
-**Support:** Check DESIGN.md for architecture details and caveats.
+## Next Steps
+
+1. Set `WEBHOOK_SECRET` in `.env` for production security
+2. Create TradingView alerts for your tracked assets using the naming convention
+3. Verify the first daily report arrives at 5 PM EST
+4. Tune `CONFIDENCE_THRESHOLD` to control email sensitivity
+5. Add the terminal `tv` alias for manual behaviour logging
+
+---
+
+**Support:** See [DESIGN.md](DESIGN.md) for architecture details and [CAVEATS.md](CAVEATS.md) for known limitations.
