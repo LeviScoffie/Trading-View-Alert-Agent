@@ -1,157 +1,145 @@
-# TradingView Alert Agent - Architecture Design Document
+# TradingView Alert Agent — Architecture Design Document
 
 ## Overview
 
-A context-intelligent trading alert system that transforms raw TradingView signals into actionable insights with behavioral tracking and multi-timeframe analysis.
+A context-intelligent trading alert system that transforms raw TradingView signals into actionable insights with behavioural tracking and multi-timeframe analysis.
 
 **Core Philosophy:** Raw alerts ("BTC Bullish Engulfing") are noise. Context intelligence ("past 3 days bearish + weekly engulfing = high-confidence buy") is the signal.
+
+**Version:** 2.0 — 5-service microservice architecture with central integration layer.
 
 ---
 
 ## System Architecture
 
 ```
-                                    INPUTS
-                                       │
-         ┌─────────────────────────────┼─────────────────────────────┐
-         │                             │                             │
-         ▼                             ▼                             ▼
-┌─────────────────┐         ┌─────────────────┐         ┌─────────────────┐
-│ TradingView     │         │ Manual Logs     │         │ Scheduled       │
-│ Webhooks        │         │ (Terminal /log) │         │ Analysis        │
-│                 │         │                 │         │ (Scheduler svc) │
-└────────┬────────┘         └────────┬────────┘         └────────┬────────┘
-         │                           │                           │
-         └───────────────────────────┼───────────────────────────┘
-                                     │
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                     WEBHOOK RECEIVER :8000 (Layer 1)                         │
-│                                                                              │
-│  Endpoints:                                                                  │
-│    POST /webhook              → Receive TradingView alerts                  │
-│    POST /webhook/tradingview  → Alternative endpoint                        │
-│    POST /log                  → Manual behavior logging                     │
-│    GET  /logs                 → Query behavior logs                         │
-│    GET  /logs/{symbol}        → Symbol-specific logs                        │
-│    GET  /alerts               → Recent alerts                               │
-│    GET  /alerts/{symbol}      → Symbol-specific alerts                      │
-│    GET  /attention            → Attention heatmap                           │
-│    GET  /analysis             → Recent analysis results                     │
-│    GET  /analysis/{symbol}    → Symbol analysis results                     │
-│    GET  /stats                → Database statistics                         │
-│    GET  /health               → Health check                                │
-│                                                                              │
-│  Security: HMAC-SHA256 signature validation (optional for local testing)    │
-│  Storage: SQLite alerts.db (alerts + behavior_logs + analysis_results)      │
-└──────────────────────────────────┬──────────────────────────────────────────┘
-                                   │ background task (alert_processor.py)
-                                   ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                  ANALYSIS ENGINE (Layer 2 — embedded library)                │
-│                                                                              │
-│  NOT a standalone container. Runs inside webhook-receiver via:              │
-│    analysis_bridge.py  →  AnalysisEngine class                              │
-│    alert_processor.py  →  orchestrates background analysis pipeline         │
-│                                                                              │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐        │
-│  │   Pattern   │  │    MA20     │  │   Context   │  │    Multi    │        │
-│  │  Detector   │  │  Analyzer   │  │   Engine    │  │ Timeframe   │        │
-│  │ 12 patterns │  │ trend/slope │  │  5 rules    │  │ 1W/1D/4H/1H │        │
-│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘        │
-│         └────────────────┴────────────────┴────────────────┘               │
-│                                   │                                         │
-│                                   ▼                                         │
-│  Context Rules:                                                              │
-│    Rule 1: Bearish pullback + weekly engulfing = buy opportunity            │
-│    Rule 2: Price > 20MA + bullish engulfing = high confidence               │
-│    Rule 3: Price < 20MA + bearish engulfing = high confidence               │
-│    Rule 4: Multi-timeframe alignment = higher confidence                    │
-│    Rule 5: Doji at support/resistance = potential reversal                  │
-│                                                                              │
-│  Output → stored in analysis_results table; if confidence ≥ threshold →    │
-│           immediate email triggered via alert_processor._trigger_alert_email│
-└──────────────────────────────────┬──────────────────────────────────────────┘
-                                   │
-                         ┌─────────┴──────────┐
-                         │   Shared SQLite    │
-                         │  Volume (tv_data)  │
-                         │  alerts.db         │
-                         │  ohlcv.db          │
-                         └─────────┬──────────┘
-                                   │
-              ┌────────────────────┴────────────────────┐
-              │                                         │
-              ▼                                         ▼
-┌─────────────────────────────┐           ┌─────────────────────────────────┐
-│   SCHEDULER :8003            │           │   EMAIL NOTIFIER :8001          │
-│                              │           │                                 │
-│  APScheduler cron jobs:      │  HTTP     │  FastAPI endpoints:             │
-│  Daily  → 5:00 PM EST        │  POST ───▶│  POST /reports/daily            │
-│  Weekly → Sun 5:00 PM EST    │           │  POST /reports/weekly           │
-│  Monthly→ Last day 5PM EST   │           │  POST /reports/monthly          │
-│  Cleanup→ Sun 3:00 AM EST    │           │                                 │
-│  Health → hourly             │           │  Reads: alerts.db + ohlcv.db    │
-│                              │           │  Sends: SMTP/SendGrid/AWS SES   │
-│  Job management API:         │           │  HTML templates via Jinja2      │
-│  GET /jobs                   │           │  Retry logic (3x, 60s delay)    │
-│  POST /jobs/{id}/trigger     │           └─────────────────────────────────┘
-│  POST /jobs/{id}/pause       │
-│  GET /dashboard              │
-└──────────────────────────────┘
+                              INPUTS
+                                 │
+         ┌───────────────────────┼───────────────────────┐
+         │                       │                       │
+         ▼                       ▼                       ▼
+┌─────────────────┐    ┌──────────────────┐   ┌──────────────────┐
+│  TradingView    │    │   Manual Logs    │   │    Scheduler     │
+│  Webhooks       │    │  (Terminal /log) │   │  (Cron reports)  │
+└────────┬────────┘    └────────┬─────────┘   └────────┬─────────┘
+         │                      │                      │
+         │                      │ direct HTTP          │ HTTP
+         ▼                      ▼                      ▼
+┌──────────────────────────────────────────────────────────────────┐
+│              INTEGRATION SERVICE  :8004                           │
+│                                                                  │
+│  POST /webhook          — TradingView entry point                │
+│  GET  /health           — Aggregate health of all services       │
+│  GET  /status/{id}      — Alert processing status               │
+│  POST /trigger-analysis — Manual analysis without alert          │
+│                                                                  │
+│  Pipeline (orchestrator.py):                                     │
+│    1. POST webhook-receiver:8000/webhook    → store alert        │
+│    2. POST analysis-engine:8001/analyze     → run analysis       │
+│    3. POST webhook-receiver:8000/analysis/{id} → persist result  │
+│    4. POST email-notifier:8002/send-alert   → email if ≥ 0.75   │
+│    5. Return unified JSON (always HTTP 200)                      │
+│                                                                  │
+│  Reliability:                                                    │
+│    • 3-attempt exponential backoff on every downstream call      │
+│    • Partial failures logged; TradingView always gets HTTP 200   │
+│    • 10s timeout per call                                        │
+└──────┬──────────┬──────────────────┬─────────────────────────────┘
+       │          │                  │
+       ▼          ▼                  ▼
+┌───────────┐ ┌──────────────┐ ┌───────────────┐
+│  Webhook  │ │  Analysis    │ │    Email      │
+│  Receiver │ │  Engine      │ │   Notifier   │
+│  :8000    │ │  :8001       │ │   :8002      │
+└─────┬─────┘ └──────┬───────┘ └───────────────┘
+      │               │
+      └───────┬────────┘
+              ▼
+    ┌────────────────────┐      ┌────────────────┐
+    │  SQLite (tv_data)  │      │   Scheduler    │
+    │  alerts.db         │      │   :8003        │
+    │  ohlcv.db          │      │  APScheduler   │
+    │  scheduler.db      │      │  5 cron jobs   │
+    └────────────────────┘      └────────────────┘
 ```
 
 ---
 
 ## Component Details
 
-### 1. Webhook Receiver
+### 1. Integration Service `:8004` — NEW
 
-**Purpose:** Entry point for all data. Receives TradingView alerts, runs background analysis, stores results.
+**Purpose:** Central orchestrator. The only service that TradingView talks to. Coordinates all downstream services and returns a unified response.
+
+**Location:** `integration-service/`
+
+**Files:**
+
+| File | Purpose |
+|------|---------|
+| `integration_service.py` | FastAPI app — 4 endpoints |
+| `orchestrator.py` | Core pipeline logic (store → analyze → persist → email) |
+| `clients.py` | Async httpx wrappers with retry + timeout |
+| `models.py` | Pydantic request/response models |
+| `config.py` | pydantic-settings configuration |
+
+**Endpoints:**
+
+| Endpoint | Description |
+|----------|-------------|
+| `POST /webhook` | Receive TradingView alert, run full pipeline |
+| `GET /health` | Aggregate health of all 4 downstream services |
+| `GET /status/{alert_id}` | Processing status of a stored alert |
+| `POST /trigger-analysis` | Manually trigger analysis without alert storage |
+
+**Orchestration flow:**
+```python
+# orchestrator.py
+async def process_webhook(payload):
+    stored   = await clients.store_alert(payload)          # → :8000
+    analysis = await clients.analyze(symbol, timeframe)    # → :8001
+    _        = await clients.store_analysis(id, result)    # → :8000
+    if confidence >= threshold:
+        _    = await clients.send_alert_email(symbol, analysis)  # → :8002
+    return unified_response   # always HTTP 200
+```
+
+**Reliability:**
+- `httpx.AsyncClient` with `Timeout(10s)`
+- 3-attempt exponential backoff (0.5s → 1s → 2s)
+- Partial failure model: one service down never fails the whole pipeline
+- Always returns HTTP 200 to TradingView (prevents retry storms)
+
+**Environment variables:**
+```bash
+WEBHOOK_RECEIVER_URL=http://webhook-receiver:8000
+ANALYSIS_ENGINE_URL=http://analysis-engine:8001
+EMAIL_NOTIFIER_URL=http://email-notifier:8002
+SCHEDULER_URL=http://scheduler:8003
+CONFIDENCE_THRESHOLD=0.75
+REQUEST_TIMEOUT_SECONDS=10
+MAX_RETRIES=3
+PORT=8004
+```
+
+---
+
+### 2. Webhook Receiver `:8000`
+
+**Purpose:** Durable storage for alerts, analysis results, and behaviour logs. No orchestration logic — purely a data layer.
 
 **Location:** `webhook-receiver/`
 
-**Key Features:**
-- HMAC-SHA256 signature validation for security
-- Dual input: automated alerts + manual `/log` endpoint
-- SQLite persistence with indexing
-- Background analysis via `alert_processor.py` → `analysis_bridge.py`
-- Immediate email trigger when confidence ≥ `CONFIDENCE_THRESHOLD`
+**Key endpoints (storage only):**
+- `POST /webhook` — store incoming alert, return `alert_id`
+- `POST /analysis/{alert_id}` — persist analysis result from analysis-engine
+- `POST /log` — manual behaviour entry
+- `GET /alerts`, `/alerts/{symbol}` — alert queries
+- `GET /analysis`, `/analysis/{symbol}` — analysis result queries
+- `GET /logs`, `/logs/{symbol}`, `/attention` — behaviour queries
+- `GET /stats`, `/health`
 
-**Behavior Tracking (No Extension Required):**
-
-TradingView alerts encode behavior through enriched payloads:
-
-```json
-{
-  "symbol": "{{ticker}}",
-  "price": {{close}},
-  "timeframe": "{{interval}}",
-  "volume": {{volume}},
-  "time": "{{time}}",
-  "message": "{{strategy.order.action}}"
-}
-```
-
-Alert naming convention encodes intent:
-```
-{SYMBOL} - {conviction} - {context}
-
-BTCUSD - high conviction - weekly engulfing
-MORPHOUSDT - watching - support test
-ETHUSD - set and forget - 200MA
-```
-
-Manual logging via terminal alias:
-```bash
-alias tv='function _tv(){ curl -s -X POST "http://localhost:8000/log" \
-  -H "Content-Type: application/json" \
-  -d "{\"symbol\":\"$1\",\"timeframe\":\"$2\",\"note\":\"$3\"}" | python3 -m json.tool; }; _tv'
-
-tv BTCUSD 4H "looks like accumulation"
-```
-
-**Database Schema:**
+**Database schema (alerts.db):**
 
 ```sql
 CREATE TABLE alerts (
@@ -189,31 +177,53 @@ CREATE TABLE analysis_results (
 );
 ```
 
+**Behaviour Tracking:**
+
+TradingView alert names encode intent:
+```
+BTCUSD - high conviction - weekly engulfing
+MORPHOUSDT - watching - support test
+ETHUSD - set and forget - 200MA
+```
+
+Manual logging via terminal alias:
+```bash
+alias tv='function _tv(){ curl -s -X POST "http://localhost:8000/log" \
+  -H "Content-Type: application/json" \
+  -d "{\"symbol\":\"$1\",\"timeframe\":\"$2\",\"note\":\"$3\"}" | python3 -m json.tool; }; _tv'
+
+tv BTCUSD 4H "looks like accumulation"
+```
+
 ---
 
-### 2. Analysis Engine
+### 3. Analysis Engine `:8001`
 
-**Purpose:** Transform raw alerts into context-intelligent signals.
+**Purpose:** Run the full analysis pipeline (pattern detection, MA20, context rules, multi-timeframe) as a standalone HTTP microservice.
 
 **Location:** `analysis-engine/`
 
-**Deployment:** NOT a standalone Docker container. Imported as a Python library inside the webhook-receiver container via `analysis_bridge.py`. The `alert_processor.py` background task calls `analysis_bridge.run_analysis()` after each alert is stored.
+**Deployment:** Standalone Docker container on port 8001. Shares the `tv_data` volume to read/write `ohlcv.db`. No coupling to any other service — pure input/output over HTTP.
+
+**Endpoint:**
+- `POST /analyze` — accepts `{symbol, timeframe, candle?}`, returns full analysis result
 
 **Modules:**
 
 | Module | Purpose |
 |--------|---------|
-| `pattern_detector.py` | Detect 12 candlestick patterns |
-| `ma_analyzer.py` | 20MA calculations and trend analysis |
-| `context_engine.py` | Apply context rules with confidence scoring |
-| `multi_timeframe.py` | Multi-TF confluence detection (1W/1D/4H/1H) |
+| `api.py` | FastAPI wrapper — the HTTP entry point |
 | `analysis_engine.py` | Main orchestrator |
-| `database.py` | OHLCV SQLite storage |
+| `pattern_detector.py` | 12 candlestick patterns |
+| `ma_analyzer.py` | 20MA calculations, trend + slope |
+| `context_engine.py` | 5 context rules + confidence scoring |
+| `multi_timeframe.py` | 1W/1D/4H/1H confluence detection |
+| `database.py` | OHLCV SQLite storage (`ohlcv.db`) |
 | `models.py` | Pydantic data models |
 
-**Pattern Detection (12 Patterns):**
+**Pattern Detection (12 patterns):**
 
-| Pattern | Type | Confidence Base |
+| Pattern | Type | Base Confidence |
 |---------|------|-----------------|
 | Bullish Engulfing | Reversal | 0.85 |
 | Bearish Engulfing | Reversal | 0.85 |
@@ -227,57 +237,44 @@ CREATE TABLE analysis_results (
 | Three White Soldiers | Bullish continuation | 0.85 |
 | Three Black Crows | Bearish continuation | 0.85 |
 
-**20MA Analysis:**
-
-```python
-{
-    "price": 45000,
-    "ma20": 44000,
-    "distance_pct": 2.27,
-    "trend": "bullish",   # above/below MA
-    "slope": "rising"     # rising/falling/flat
-}
-```
-
 **Context Rules:**
 
-| Rule | Condition | Confidence | Output |
-|------|-----------|------------|--------|
-| 1 | Past 2-3 days bearish + weekly engulfing | 0.85 | "Buying opportunity - bullish context" |
-| 2 | Price > 20MA + bullish engulfing | 0.75–0.90 | "High confidence long" |
-| 3 | Price < 20MA + bearish engulfing | 0.75–0.90 | "High confidence short" |
-| 4 | Multi-timeframe alignment | 0.60–0.80 | "Confluence signal" |
-| 5 | Doji at support/resistance | 0.70–0.75 | "Potential reversal" |
+| Rule | Condition | Output |
+|------|-----------|--------|
+| 1 | Past 2–3 days bearish + weekly engulfing | Buying opportunity (0.85) |
+| 2 | Price > 20MA + bullish engulfing | High confidence long (0.75–0.90) |
+| 3 | Price < 20MA + bearish engulfing | High confidence short (0.75–0.90) |
+| 4 | Multi-timeframe alignment | Confluence signal (0.60–0.80) |
+| 5 | Doji at support/resistance | Potential reversal (0.70–0.75) |
 
 **Timeframe Weights:**
 
-| Timeframe | Weight | Rationale |
-|-----------|--------|-----------|
-| Weekly | 40% | Primary trend direction |
-| Daily | 30% | Secondary confirmation |
-| 4H | 20% | Entry timing |
-| 1H | 10% | Fine-tuning |
+| Timeframe | Weight |
+|-----------|--------|
+| Weekly | 40% |
+| Daily | 30% |
+| 4H | 20% |
+| 1H | 10% |
 
-**Analysis Output Format:**
-
+**Analysis Response:**
 ```json
 {
   "symbol": "BTCUSD",
-  "timestamp": "2026-04-08T10:30:00Z",
+  "timestamp": "2026-04-09T12:00:00Z",
   "patterns": [
-    {"type": "bullish_engulfing", "confidence": 0.85, "timeframe": "1D"}
+    {"type": "bullish_engulfing", "confidence": 0.85, "timeframe": "1D", "direction": "bullish"}
   ],
   "ma20": {
-    "price": 45000,
-    "ma20": 44000,
-    "distance_pct": 2.27,
+    "price": 65000,
+    "ma20": 63000,
+    "distance_pct": 3.17,
     "trend": "bullish",
     "slope": "rising"
   },
   "context": {
     "sentiment": "bullish",
     "confidence": 0.82,
-    "reasoning": "Weekly bullish engulfing + past 3 days bearish pullback = buying opportunity",
+    "reasoning": "Weekly bullish engulfing + past 3 days bearish pullback",
     "recommendation": "consider_long"
   },
   "multi_timeframe": {
@@ -290,60 +287,40 @@ CREATE TABLE analysis_results (
 
 ---
 
-### 3. Email Notifier
+### 4. Email Notifier `:8002`
 
-**Purpose:** Deliver scheduled analysis reports via email with real-time market analysis.
+**Purpose:** Send emails — either immediate high-confidence alerts triggered by the integration service, or scheduled summary reports triggered by the scheduler.
 
 **Location:** `email-notifier/`
 
-**Deployment:** Standalone Docker service on port 8001. Exposes FastAPI endpoints that the Scheduler triggers via HTTP POST. Does NOT self-schedule — all timing is controlled by the Scheduler service.
-
 **Endpoints:**
-- `POST /reports/daily` — Generate and send daily report
-- `POST /reports/weekly` — Generate and send weekly report
-- `POST /reports/monthly` — Generate and send monthly report
-- `GET /health` — Health check
+- `POST /send-alert` — immediate alert email (called by integration-service)
+- `POST /reports/daily` — daily summary report (called by scheduler)
+- `POST /reports/weekly` — weekly summary report
+- `POST /reports/monthly` — monthly summary report
+- `GET /health`
 
-**Email Format:**
-- HTML with dark-themed styling (Jinja2 templates)
-- Summary metrics (total alerts, symbols, bullish/bearish signals)
-- Pattern badges with confidence scores (color-coded green/yellow/red)
-- MA20 status with visual indicator
-- Context reasoning section
-- Multi-timeframe alignment grid (1W/1D/4H/1H)
-- Actionable recommendations (5 levels: strong_long → strong_short)
-- Recent alerts list + plain text fallback
-
-**Email Providers:** SMTP (Gmail), SendGrid, AWS SES  
-**Retry Logic:** 3 retries with 60s delay  
-**Timezone:** America/New_York
+**Email providers:** SMTP (Gmail), SendGrid, AWS SES  
+**Retry logic:** 3 attempts with 60s delay  
+**Template format:** HTML with dark theme (Jinja2) + plain-text fallback
 
 ---
 
-### 4. Scheduler
+### 5. Scheduler `:8003`
 
-**Purpose:** Central orchestrator for all timed operations. Triggers email reports, runs data maintenance, and monitors service health.
+**Purpose:** Cron-based orchestration for scheduled reports and maintenance tasks.
 
 **Location:** `scheduler/`
-
-**Deployment:** Standalone Docker service on port 8003. Uses APScheduler with SQLite persistence for job state. Depends on webhook-receiver and email-notifier being up.
 
 **Scheduled Jobs:**
 
 | Job | Schedule | Action |
 |-----|----------|--------|
-| Daily Report | 5:00 PM EST (daily) | `POST http://email-notifier:8001/reports/daily` |
-| Weekly Report | 5:00 PM EST (Sunday) | `POST http://email-notifier:8001/reports/weekly` |
-| Monthly Report | 5:00 PM EST (last day) | `POST http://email-notifier:8001/reports/monthly` |
+| Daily Report | 5:00 PM EST (daily) | `POST email-notifier:8002/reports/daily` |
+| Weekly Report | 5:00 PM EST (Sunday) | `POST email-notifier:8002/reports/weekly` |
+| Monthly Report | 5:00 PM EST (last day) | `POST email-notifier:8002/reports/monthly` |
 | Data Cleanup | 3:00 AM EST (Sunday) | Prune alerts/analysis older than 90 days |
-| Health Check | Hourly | Ping all services; log status |
-
-**Management API:**
-- `GET /jobs` — List all jobs with next run times
-- `POST /jobs/{id}/trigger` — Manually fire a job
-- `POST /jobs/{id}/pause` / `/resume` — Pause/resume scheduling
-- `GET /dashboard` — Overview of all jobs and service health
-- `GET /alerts` — Active scheduler alerts
+| Health Check | Hourly | Ping all services, log status |
 
 ---
 
@@ -353,139 +330,142 @@ CREATE TABLE analysis_results (
 TradingView Alert
       │
       ▼
-webhook-receiver:8000
-  POST /webhook → validates HMAC → stores in alerts table
+integration-service:8004  POST /webhook
       │
-      ▼ (background: alert_processor.py)
-  alert_processor.process_alert()
-      ├─ analysis_bridge.run_analysis()
-      │   └─ AnalysisEngine(pattern_detector, ma_analyzer,
-      │                      context_engine, multi_timeframe)
-      │   └─ stores OHLCV → ohlcv.db
-      ├─ db.store_analysis_result() → analysis_results table
-      └─ if confidence >= CONFIDENCE_THRESHOLD:
-             _trigger_alert_email() → SMTP send
+      ├─① POST webhook-receiver:8000/webhook
+      │       → stores in alerts table
+      │       → returns alert_id
+      │
+      ├─② POST analysis-engine:8001/analyze
+      │       → loads ohlcv.db
+      │       → runs pattern_detector, ma_analyzer, context_engine, multi_timeframe
+      │       → returns AnalysisResult JSON
+      │
+      ├─③ POST webhook-receiver:8000/analysis/{alert_id}
+      │       → persists result in analysis_results table
+      │       → marks alert as processed
+      │
+      └─④ if confidence >= CONFIDENCE_THRESHOLD:
+              POST email-notifier:8002/send-alert
+                  → renders HTML alert template
+                  → sends via SMTP/SendGrid/SES
 
 
 scheduler:8003
-  [cron: 5PM EST daily] ──── POST /reports/daily ──▶ email-notifier:8001
-  [cron: Sun 5PM EST]  ──── POST /reports/weekly ──▶ email-notifier:8001
-  [cron: last day 5PM] ──── POST /reports/monthly ─▶ email-notifier:8001
-  [cron: Sun 3AM EST]  ──── db.prune_old_records() (90-day retention)
-
-
-email-notifier:8001
-  receives HTTP POST → report_generator.generate_report()
-      ├─ queries alerts.db (recent alerts by symbol)
-      ├─ queries analysis_results (patterns + confidence)
-      ├─ generates HTML via templates.py (Jinja2)
-      └─ sends via SMTP / SendGrid / AWS SES
+  [daily 5PM EST]   → POST email-notifier:8002/reports/daily
+  [Sun 5PM EST]     → POST email-notifier:8002/reports/weekly
+  [last day 5PM]    → POST email-notifier:8002/reports/monthly
+  [Sun 3AM EST]     → db.prune_old_records() (90-day retention)
+  [hourly]          → ping all service /health endpoints
 ```
-
----
-
-## Security Considerations
-
-### Webhook Signature Validation
-
-```python
-# HMAC-SHA256 of raw request body
-expected = hmac.new(
-    WEBHOOK_SECRET.encode(),
-    request_body,
-    hashlib.sha256
-).hexdigest()
-
-# Constant-time comparison prevents timing attacks
-if not hmac.compare_digest(expected, received_signature):
-    raise HTTPException(401, "Invalid signature")
-```
-
-### Database Security
-- SQLite file permissions: 600 (owner read/write only)
-- No sensitive data in logs
-- Raw payload stored for debugging (can be disabled)
 
 ---
 
 ## Deployment Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                         Docker Host                              │
-│                                                                  │
-│  ┌──────────────────┐  ┌──────────────────┐  ┌───────────────┐  │
-│  │ webhook-receiver │  │  email-notifier  │  │   scheduler   │  │
-│  │    :8000         │  │     :8001        │  │    :8003      │  │
-│  │                  │  │                  │  │               │  │
-│  │  + analysis-     │  │  (triggered by   │  │  (triggers    │  │
-│  │    engine lib    │  │   scheduler)     │  │   notifier)   │  │
-│  └────────┬─────────┘  └────────┬─────────┘  └───────┬───────┘  │
-│           │                     │                    │          │
-│           └─────────────────────┴────────────────────┘          │
-│                                 │                               │
-│                      ┌──────────┴──────────┐                   │
-│                      │  tv_data volume     │                   │
-│                      │  alerts.db          │                   │
-│                      │  ohlcv.db           │                   │
-│                      │  scheduler.db       │                   │
-│                      └─────────────────────┘                   │
-└──────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                            Docker Host                              │
+│                                                                     │
+│ ┌─────────────────┐  ┌─────────────┐  ┌───────────┐  ┌──────────┐  │
+│ │ integration-    │  │  webhook-   │  │ analysis- │  │  email-  │  │
+│ │ service :8004   │  │  receiver   │  │ engine    │  │ notifier │  │
+│ │                 │  │  :8000      │  │ :8001     │  │ :8002    │  │
+│ └────────┬────────┘  └──────┬──────┘  └─────┬─────┘  └────┬─────┘  │
+│          │                  │               │              │        │
+│          └──────────────────┼───────────────┘              │        │
+│                             │                              │        │
+│                   ┌─────────┴────────┐                    │        │
+│                   │  tv_data volume  │                    │        │
+│                   │  alerts.db       │◀───────────────────┘        │
+│                   │  ohlcv.db        │                             │
+│                   └──────────────────┘                             │
+│                                                                     │
+│ ┌──────────────┐                                                    │
+│ │  scheduler   │  tv_data:/data  (scheduler.db)                    │
+│ │  :8003       │                                                    │
+│ └──────────────┘                                                    │
+│                                                                     │
+│  Network: tv-agent-network (bridge)                                │
+└─────────────────────────────────────────────────────────────────────┘
 ```
-
-**Network:** All services on `tv-agent-network` (bridge). Services communicate by container name (e.g. `http://email-notifier:8001`).
 
 ---
 
-## Configuration
+## Security
 
-### Environment Variables
+### Webhook Signature Validation
+```python
+expected = hmac.new(
+    WEBHOOK_SECRET.encode(),
+    request_body,
+    hashlib.sha256
+).hexdigest()
 
-```bash
-# Webhook Receiver
-WEBHOOK_SECRET=your-secret-key       # optional HMAC validation
-DATABASE_PATH=/app/data/alerts.db
-HOST=0.0.0.0
-PORT=8000
-LOG_LEVEL=INFO
-CONFIDENCE_THRESHOLD=0.75            # trigger immediate email above this
-
-# Analysis Engine (via webhook-receiver env)
-EMAIL_NOTIFIER_OHLCV_DB_PATH=/app/data/ohlcv.db
-
-# Email Notifier
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587
-SMTP_USER=your-email@gmail.com
-SMTP_PASSWORD=your-app-password
-EMAIL_FROM=your-email@gmail.com
-EMAIL_TO=recipient@example.com
-EMAIL_NOTIFIER_DB_PATH=/app/data/alerts.db
-EMAIL_NOTIFIER_OHLCV_DB_PATH=/app/data/ohlcv.db
-
-# Scheduler
-SCHEDULER_DB_PATH=/data/scheduler.db
-ALERTS_DB_PATH=/data/alerts.db
-WEBHOOK_RECEIVER_URL=http://webhook-receiver:8000
-EMAIL_NOTIFIER_URL=http://email-notifier:8001
-
-# Shared
-DAILY_REPORT_HOUR=17
-WEEKLY_REPORT_HOUR=17
-MONTHLY_REPORT_HOUR=17
-SCHEDULE_TIMEZONE=America/New_York
+if not hmac.compare_digest(expected, received_signature):
+    raise HTTPException(401, "Invalid signature")
 ```
+
+### Port Exposure
+- **Port 8004** — expose publicly (TradingView webhook target)
+- **Ports 8000–8003** — keep internal in production (behind reverse proxy or firewall)
 
 ---
 
 ## Performance Characteristics
 
-| Metric | Value | Notes |
-|--------|-------|-------|
-| Webhook latency | <50ms | Signature validation + DB write |
-| Analysis time | <500ms | Pattern detection + context rules |
-| Database size | ~10MB/month | Auto-pruned at 90 days |
-| Memory usage | <100MB per container | |
+| Metric | Value |
+|--------|-------|
+| Webhook latency (store only) | < 50ms |
+| Full pipeline (store + analyze + email) | < 500ms typical |
+| PRD target | < 2s (100 webhooks/minute) |
+| Database size | ~10MB/month (auto-pruned at 90 days) |
+| Memory per container | < 100MB |
+
+---
+
+## Design Decisions
+
+### 1. Integration Service as Central Orchestrator
+**Decision:** Dedicated service (port 8004) owns the entire pipeline. TradingView only talks to one endpoint.  
+**Rationale:** Clean separation — each downstream service is a pure specialist. The integration layer adds retry, timeout, partial-failure handling, and unified response shaping in one place.  
+**Trade-off:** One extra container; adds ~30–80ms of HTTP overhead vs embedded calls.
+
+### 2. Analysis Engine as Standalone Microservice
+**Decision:** `analysis-engine` runs in its own container with a FastAPI wrapper (`api.py`), not as an embedded library.  
+**Rationale:** Eliminates the `sys.path` injection hack and module-name collision (`database.py` existed in both webhook-receiver and analysis-engine namespaces). Independent scaling and restarts. Clear HTTP contract.  
+**Trade-off:** Slightly higher latency per analysis call (~10–30ms round trip vs in-process).
+
+### 3. Webhook Receiver as Pure Storage
+**Decision:** webhook-receiver no longer runs the analysis pipeline (removed `alert_processor.py` background task). It only stores alerts and results.  
+**Rationale:** Single responsibility. The integration service is the orchestrator — having webhook-receiver also orchestrate creates a confusing dual-entry-point.
+
+### 4. Always HTTP 200 from Integration Service
+**Decision:** Integration service always returns `200 OK` to TradingView, even on partial failures.  
+**Rationale:** TradingView retries non-2xx responses with exponential backoff, which can flood the pipeline. Partial failures are handled gracefully with service-level status in the response body.
+
+### 5. SQLite Over PostgreSQL
+**Decision:** SQLite for all three databases.  
+**Rationale:** Zero configuration, shared Docker volume, sufficient for current scale.  
+**Trade-off:** No concurrent writes from multiple processes; no time-series optimization.
+
+### 6. Rule-Based Context Over ML
+**Decision:** Hard-coded context rules for confidence scoring.  
+**Rationale:** Transparent, explainable, deterministic, no training data required.  
+**Future:** ML prediction model planned for Phase 3.
+
+---
+
+## Project Status
+
+| Component | Status | Port | Notes |
+|-----------|--------|------|-------|
+| Integration Service | ✅ Complete | 8004 | New in v2.0 |
+| Webhook Receiver | ✅ Complete | 8000 | Storage-only in v2.0 |
+| Analysis Engine | ✅ Complete | 8001 | Promoted to microservice in v2.0 |
+| Email Notifier | ✅ Complete | 8002 | Moved from 8001 in v2.0 |
+| Scheduler | ✅ Complete | 8003 | Unchanged |
+| Documentation | ✅ Complete | — | Updated for v2.0 |
 
 ---
 
@@ -502,109 +482,9 @@ SCHEDULE_TIMEZONE=America/New_York
 - Portfolio correlation analysis
 - Risk management recommendations
 - Telegram/Discord notification channels
+- Simple web dashboard
 
 ---
 
-## Project Status
-
-| Component | Status | Location |
-|-----------|--------|----------|
-| Webhook Receiver | ✅ Complete | `webhook-receiver/` |
-| Analysis Engine | ✅ Complete (embedded library) | `analysis-engine/` |
-| Alert Processor | ✅ Complete | `webhook-receiver/alert_processor.py` |
-| Email Notifier | ✅ Complete | `email-notifier/` |
-| Scheduler | ✅ Complete (standalone service :8003) | `scheduler/` |
-| Documentation | ✅ Complete | Root-level `.md` files |
-
----
-
-## Files Reference
-
-### Webhook Receiver
-- `webhook_receiver.py` — FastAPI app with 10+ endpoints
-- `alert_processor.py` — Background analysis pipeline
-- `analysis_bridge.py` — Embeds analysis-engine as library
-- `database.py` — SQLite schema and operations
-- `config.py` — Environment configuration
-- `Dockerfile` — Container setup
-
-### Analysis Engine (library)
-- `analysis_engine.py` — Main orchestrator
-- `pattern_detector.py` — 12 candlestick patterns
-- `ma_analyzer.py` — 20MA calculations
-- `context_engine.py` — Context rules and confidence
-- `multi_timeframe.py` — Multi-TF analysis (1W/1D/4H/1H)
-- `database.py` — OHLCV storage
-- `models.py` — Pydantic models
-- `test_patterns.py` — Unit tests
-
-### Email Notifier
-- `email_notifier.py` — FastAPI app + report endpoints
-- `report_generator.py` — Database queries + analysis
-- `templates.py` — Jinja2 HTML email templates
-- `config.py` — SMTP/SendGrid/SES configuration
-- `test_email_notifier.py` — Unit tests
-
-### Scheduler
-- `scheduler.py` — APScheduler setup
-- `api.py` — FastAPI endpoints for job management
-- `jobs.py` — Job function implementations
-- `job_store.py` — SQLite job persistence
-- `monitor.py` — Health checks
-- `config.py` — Schedule configuration
-- `timezone_utils.py` — EST/EDT DST handling
-
----
-
-## Key Design Decisions
-
-### 1. No Browser Extension Required
-**Decision:** Use TradingView alert enrichment + manual `/log` endpoint.  
-**Rationale:** 80% of behavior tracking value from alert payloads. Zero additional code for Layer 1.  
-**Trade-off:** No exact click tracking or time-on-chart metrics.
-
-### 2. Analysis Engine as Embedded Library (Not Standalone Service)
-**Decision:** analysis-engine runs inside webhook-receiver process via `analysis_bridge.py`.  
-**Rationale:** Eliminates HTTP overhead on the critical alert processing path; shared memory for OHLCV data; simpler deployment.  
-**Trade-off:** webhook-receiver image is larger; can't scale analysis independently.
-
-### 3. Scheduler as Separate Service
-**Decision:** Dedicated scheduler container (port 8003) instead of embedding APScheduler inside email-notifier.  
-**Rationale:** Clean separation of concerns; scheduler can monitor all services, not just email; job state persists in its own DB; manageable via API without restarting email-notifier.  
-**Trade-off:** One extra container.
-
-### 4. SQLite Over PostgreSQL
-**Decision:** SQLite for all three databases.  
-**Rationale:** Zero configuration, single-file, sufficient for current scale, easy backup.  
-**Trade-off:** Limited concurrent writes, no time-series optimizations.
-
-### 5. Confidence Scoring Over Binary Signals
-**Decision:** 0–1 confidence scale rather than buy/sell signals.  
-**Rationale:** Real trading decisions exist on a spectrum. Allows threshold tuning.
-
-### 6. Rule-Based Over ML
-**Decision:** Hard-coded context rules.  
-**Rationale:** Transparent, explainable, no training data, deterministic.  
-**Future:** ML can be added in Phase 3 for pattern success prediction.
-
----
-
-## Testing Strategy
-
-### Unit Tests
-- `analysis-engine/test_patterns.py` — Pattern detection with synthetic data
-- `email-notifier/test_email_notifier.py` — Report generation tests
-
-### Integration Tests (Pending)
-- End-to-end webhook → analysis → email flow
-- Scheduler → email-notifier HTTP trigger
-
-### Manual Testing
-- TradingView webhook configuration
-- Terminal alias functionality
-- Alert naming convention adherence
-
----
-
-*Last Updated: 2026-04-08*  
-*Version: 1.1*
+*Last Updated: 2026-04-09*  
+*Version: 2.0*

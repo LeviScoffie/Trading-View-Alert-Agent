@@ -15,8 +15,10 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.events import (
     EVENT_JOB_EXECUTED, EVENT_JOB_ERROR, EVENT_JOB_MISSED,
-    JobExecutionEvent, JobErrorEvent, JobMissedEvent
+    JobExecutionEvent,
 )
+# APScheduler 3.x uses JobExecutionEvent for all three event types —
+# there is no JobErrorEvent or JobMissedEvent in this version.
 
 from config import (
     TIMEZONE, SCHEDULE_CONFIG, JOB_STORE_CONFIG,
@@ -77,7 +79,7 @@ class TradingViewScheduler:
             metadata={"retval": event.retval}
         )
     
-    def _on_job_error(self, event: JobErrorEvent):
+    def _on_job_error(self, event: JobExecutionEvent):
         """Handle job execution error."""
         job_id = event.job_id
         exception = str(event.exception) if event.exception else "Unknown error"
@@ -91,7 +93,7 @@ class TradingViewScheduler:
             metadata={"traceback": event.traceback if hasattr(event, 'traceback') else None}
         )
     
-    def _on_job_missed(self, event: JobMissedEvent):
+    def _on_job_missed(self, event: JobExecutionEvent):
         """Handle missed job execution."""
         job_id = event.job_id
         logger.warning(f"Job {job_id} missed its scheduled run time")
@@ -164,8 +166,8 @@ class TradingViewScheduler:
             # Create cron trigger
             trigger = CronTrigger(**cron_args)
             
-            # Add job to scheduler
-            self.scheduler.add_job(
+            # Add job to scheduler — add_job() returns the Job object directly
+            job = self.scheduler.add_job(
                 execute_job,
                 trigger=trigger,
                 id=job_id,
@@ -174,8 +176,8 @@ class TradingViewScheduler:
                 replace_existing=True,
                 misfire_grace_time=3600  # 1 hour grace period
             )
-            
-            next_run = self.scheduler.get_job(job_id).next_run_time
+
+            next_run = getattr(job, 'next_run_time', None)
             logger.info(
                 f"Added job {job_id}: {job_func.__doc__ or job_id}. "
                 f"Next run: {format_est(next_run) if next_run else 'N/A'}"

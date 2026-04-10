@@ -1,6 +1,11 @@
-# TradingView Alert Agent Scheduler
+# Scheduler
 
-APScheduler-based job scheduler with timezone support, persistence, and monitoring for the TradingView Alert Agent system.
+APScheduler-based job scheduler with timezone support, persistence, and monitoring for the TradingView Alert Agent.
+
+**Port:** 8003  
+**Role:** Cron-based orchestration — triggers scheduled email reports and maintenance tasks. Does not receive TradingView webhooks (those go to Integration Service on port 8004).
+
+> In v2.0, email-notifier moved from port 8001 to **port 8002**. All scheduler jobs call `http://email-notifier:8002`.
 
 ## Features
 
@@ -66,7 +71,7 @@ services:
     environment:
       - SCHEDULER_LOG_LEVEL=INFO
       - WEBHOOK_RECEIVER_URL=http://webhook-receiver:8000
-      - EMAIL_NOTIFIER_URL=http://email-notifier:8001
+      - EMAIL_NOTIFIER_URL=http://email-notifier:8002
     restart: unless-stopped
 ```
 
@@ -134,7 +139,7 @@ curl -X POST http://localhost:8003/jobs/weekly_report/resume
 | `SCHEDULER_API_HOST` | `0.0.0.0` | API server host |
 | `SCHEDULER_API_PORT` | `8003` | API server port |
 | `WEBHOOK_RECEIVER_URL` | `http://webhook-receiver:8000` | Webhook receiver service URL |
-| `EMAIL_NOTIFIER_URL` | `http://email-notifier:8001` | Email notifier service URL |
+| `EMAIL_NOTIFIER_URL` | `http://email-notifier:8002` | Email notifier service URL |
 | `ANALYSIS_ENGINE_URL` | `http://analysis-engine:8002` | Analysis engine service URL |
 | `TZ` | `America/New_York` | Timezone (EST/EDT) |
 
@@ -290,7 +295,7 @@ print(is_dst())  # True if DST is active
 curl http://webhook-receiver:8000/health
 
 # Test email notifier
-curl http://email-notifier:8001/health
+curl http://email-notifier:8002/health
 ```
 
 ## Development

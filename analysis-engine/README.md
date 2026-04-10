@@ -1,241 +1,191 @@
-# Analysis Engine for TradingView Alert Agent
+# Analysis Engine — Microservice
 
 Context-aware candlestick pattern analysis with multi-timeframe intelligence.
 
+**Port:** 8001  
+**Role:** Standalone analysis microservice — called by the Integration Service for every alert.
+
+---
+
 ## Overview
 
-This engine transforms raw TradingView alerts into intelligent trading signals by adding:
-- **Candlestick pattern detection** (12+ patterns)
-- **20-period moving average analysis**
-- **Context intelligence** with confidence scoring
-- **Multi-timeframe confluence** detection
+The Analysis Engine transforms raw symbol + timeframe inputs into intelligent trading signals:
 
-## Why This Matters
+- **12 candlestick patterns** — engulfing, doji, hammer, morning/evening star, three soldiers/crows
+- **20-period moving average** — trend direction, slope, distance from price
+- **Context rules** — 5 rules combining patterns + MA + multi-timeframe into a confidence score
+- **Multi-timeframe confluence** — 1W/1D/4H/1H alignment detection
 
-Raw alerts ("BTC Bullish Engulfing") are noise. Context intelligence ("past 3 days bearish + weekly engulfing = high-confidence buy") is the signal.
+---
 
-## Quick Start
+## HTTP API
 
-### Installation
+### POST /analyze
 
-```bash
-pip install -r requirements.txt
-```
-
-### Basic Usage
-
-```python
-from analysis_engine import AnalysisEngine, Timeframe
-
-# Initialize engine
-engine = AnalysisEngine(db_path="ohlcv.db")
-
-# Store OHLCV data (from your data source)
-engine.store_ohlcv_data("BTCUSD", Timeframe.DAILY, [
-    {"timestamp": "2026-04-08T00:00:00", "open": 45000, "high": 46000, 
-     "low": 44500, "close": 45500, "volume": 1000000}
-])
-
-# Analyze symbol
-result = engine.analyze_symbol("BTCUSD", Timeframe.DAILY)
-
-# Print results
-print(f"Sentiment: {result.context.sentiment}")
-print(f"Confidence: {result.context.confidence}")
-print(f"Recommendation: {result.context.recommendation}")
-print(f"Reasoning: {result.context.reasoning}")
-```
-
-### Quick Analysis Function
-
-```python
-from analysis_engine import analyze, Timeframe
-
-result = analyze("BTCUSD", Timeframe.DAILY)
-print(result.model_dump_json(indent=2))
-```
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    AnalysisEngine                            │
-│  (Main Orchestrator)                                         │
-└──────────────┬──────────────────────────────────────────────┘
-               │
-    ┌──────────┼──────────┬──────────────┬─────────────┐
-    │          │          │              │             │
-    ▼          ▼          ▼              ▼             ▼
-┌────────┐ ┌────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐
-│Pattern │ │  MA20  │ │ Context  │ │   Multi  │ │Database  │
-│Detector│ │Analyzer│ │  Engine  │ │Timeframe │ │  (SQLite)│
-└────────┘ └────────┘ └──────────┘ └──────────┘ └──────────┘
-```
-
-## Components
-
-### 1. Pattern Detector (`pattern_detector.py`)
-
-Detects 12+ candlestick patterns:
-
-| Pattern | Type | Significance |
-|---------|------|--------------|
-| Bullish/Bearish Engulfing | 2-candle | Reversal signal |
-| Doji (Standard, Dragonfly, Gravestone) | 1-candle | Indecision/reversal |
-| Hammer / Inverted Hammer | 1-candle | Reversal |
-| Morning Star / Evening Star | 3-candle | Strong reversal |
-| Three White Soldiers / Three Black Crows | 3-candle | Strong trend |
-
-### 2. MA Analyzer (`ma_analyzer.py`)
-
-- Calculates 20-period moving average
-- Determines trend (above/below MA)
-- Tracks slope (rising, falling, flat)
-- Identifies support/resistance levels
-
-### 3. Context Engine (`context_engine.py`)
-
-Implements 5 context rules:
-
-1. **Rule 1**: Past 2-3 days bearish + weekly bullish engulfing = buying opportunity
-2. **Rule 2**: Price > 20MA + bullish engulfing = high confidence bullish
-3. **Rule 3**: Price < 20MA + bearish engulfing = high confidence bearish
-4. **Rule 4**: Multiple timeframe alignment = higher confidence
-5. **Rule 5**: Doji at support/resistance = potential reversal
-
-### 4. Multi-Timeframe Analyzer (`multi_timeframe.py`)
-
-- Analyzes Weekly, Daily, 4H, 1H together
-- Weights higher timeframes more heavily (Weekly: 40%, Daily: 30%, 4H: 20%, 1H: 10%)
-- Detects timeframe divergences
-- Calculates overall alignment score
-
-## Output Format
-
+**Request:**
 ```json
 {
   "symbol": "BTCUSD",
-  "timestamp": "2026-04-08T10:30:00Z",
+  "timeframe": "1D",
+  "lookback_days": 30,
+  "candle": {
+    "timestamp": "2026-04-09T12:00:00Z",
+    "open": 64000,
+    "high": 66000,
+    "low": 63500,
+    "close": 65000,
+    "volume": 123456
+  }
+}
+```
+
+`candle` is optional — if provided, the candle is stored in `ohlcv.db` before analysis runs so the engine always has the latest data point.
+
+**Response:**
+```json
+{
+  "symbol": "BTCUSD",
+  "timestamp": "2026-04-09T12:00:01Z",
   "patterns": [
-    {"type": "bullish_engulfing", "confidence": 0.85, "timeframe": "1D"}
+    {
+      "type": "bullish_engulfing",
+      "confidence": 0.85,
+      "timeframe": "1D",
+      "direction": "bullish"
+    }
   ],
   "ma20": {
-    "price": 45000,
-    "ma20": 44000,
-    "distance_pct": 2.27,
+    "price": 65000,
+    "ma20": 63000,
+    "distance_pct": 3.17,
     "trend": "bullish",
     "slope": "rising"
   },
   "context": {
     "sentiment": "bullish",
     "confidence": 0.82,
-    "reasoning": "Weekly bullish engulfing + past 3 days bearish pullback = buying opportunity",
-    "key_levels": [42000, 48000],
+    "reasoning": "Weekly bullish engulfing + past 3 days bearish pullback",
     "recommendation": "consider_long"
   },
   "multi_timeframe": {
     "weekly": {"trend": "bullish", "alignment": true},
-    "daily": {"trend": "bullish", "alignment": true},
-    "4h": {"trend": "bearish", "alignment": false},
-    "overall_alignment": 0.75,
-    "divergence_detected": true
+    "daily":  {"trend": "bullish", "alignment": true},
+    "4h":     {"trend": "bearish", "alignment": false}
   }
 }
 ```
 
-## Running Tests
+> **Note:** If `ohlcv.db` has insufficient history (fresh install), the engine returns `confidence: 0.0` and empty patterns. Confidence grows as OHLCV candle data accumulates from real TradingView alerts.
 
-```bash
-# Run all tests
-python -m pytest test_patterns.py -v
+### GET /health
 
-# Run with coverage
-python -m pytest test_patterns.py --cov=. --cov-report=html
-
-# Run specific test
-python -m pytest test_patterns.py::TestPatternDetector::test_bullish_engulfing -v
+```json
+{"status": "healthy", "service": "analysis-engine", "db_path": "/app/data/ohlcv.db"}
 ```
 
-## Docker Usage
+---
+
+## Pattern Detection (12 Patterns)
+
+| Pattern | Type | Base Confidence |
+|---------|------|-----------------|
+| Bullish Engulfing | Reversal | 0.85 |
+| Bearish Engulfing | Reversal | 0.85 |
+| Doji | Indecision | 0.70 |
+| Dragonfly Doji | Bullish reversal | 0.75 |
+| Gravestone Doji | Bearish reversal | 0.75 |
+| Hammer | Bullish reversal | 0.80 |
+| Inverted Hammer | Bullish reversal | 0.75 |
+| Morning Star | Bullish reversal | 0.85 |
+| Evening Star | Bearish reversal | 0.85 |
+| Three White Soldiers | Bullish continuation | 0.85 |
+| Three Black Crows | Bearish continuation | 0.85 |
+
+---
+
+## Context Rules
+
+| Rule | Condition | Confidence |
+|------|-----------|------------|
+| 1 | Past 2–3 days bearish + weekly bullish engulfing | 0.85 |
+| 2 | Price > 20MA + bullish engulfing | 0.75–0.90 |
+| 3 | Price < 20MA + bearish engulfing | 0.75–0.90 |
+| 4 | Multi-timeframe alignment | 0.60–0.80 |
+| 5 | Doji at support/resistance | 0.70–0.75 |
+
+---
+
+## Timeframe Weights
+
+| Timeframe | Weight |
+|-----------|--------|
+| Weekly (1W) | 40% |
+| Daily (1D) | 30% |
+| 4-Hour (4H) | 20% |
+| 1-Hour (1H) | 10% |
+
+---
+
+## Recommendations
+
+| Value | Meaning |
+|-------|---------|
+| `strong_long` | High confidence bullish signal |
+| `consider_long` | Moderate bullish signal |
+| `neutral` | No clear direction |
+| `consider_short` | Moderate bearish signal |
+| `strong_short` | High confidence bearish signal |
+| `wait` | Conflicting signals — no action |
+
+---
+
+## Docker
 
 ```bash
-# Build image
 docker build -t analysis-engine .
 
-# Run tests in container
-docker run --rm analysis-engine
-
-# Run analysis (interactive)
-docker run --rm -it analysis-engine python -c \
-  "from analysis_engine import analyze; print(analyze('BTCUSD'))"
+docker run -d \
+  -p 8001:8001 \
+  -v tv_data:/app/data \
+  -e OHLCV_DB_PATH=/app/data/ohlcv.db \
+  analysis-engine
 ```
 
-## Configuration
+**Environment variables:**
 
-Create a custom config:
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OHLCV_DB_PATH` | `/app/data/ohlcv.db` | Path to OHLCV SQLite database |
+| `HOST` | `0.0.0.0` | Bind address |
+| `PORT` | `8001` | Listen port |
+| `LOG_LEVEL` | `INFO` | Logging level |
 
-```python
-from models import Config
+---
 
-config = Config(
-    db_path="custom.db",
-    ma_period=20,
-    slope_threshold=0.001,
-    doji_threshold=0.01,
-    hammer_threshold=0.3,
-    pattern_lookback=5,
-    confidence_weights={
-        "weekly": 0.4,
-        "daily": 0.3,
-        "4h": 0.2,
-        "1h": 0.1
-    }
-)
+## Local Development
 
-engine = AnalysisEngine(config=config)
+```bash
+pip install -r requirements.txt
+uvicorn api:app --reload --port 8001
 ```
 
-## Integration with TradingView
+---
 
-1. Set up TradingView alerts with webhook to your backend
-2. Backend receives alert and calls `engine.process_alert()`
-3. Analysis result is sent back as notification (Discord, Telegram, email)
+## File Reference
 
-Example webhook handler:
+| File | Purpose |
+|------|---------|
+| `api.py` | FastAPI HTTP entry point — wraps AnalysisEngine for HTTP access |
+| `analysis_engine.py` | Main orchestrator — coordinates all analysis components |
+| `pattern_detector.py` | Candlestick pattern detection logic |
+| `ma_analyzer.py` | 20MA calculation, trend direction, slope analysis |
+| `context_engine.py` | Context rules + confidence scoring |
+| `multi_timeframe.py` | Multi-TF confluence detection (1W/1D/4H/1H) |
+| `database.py` | OHLCV SQLite read/write (`ohlcv.db`) |
+| `models.py` | Pydantic data models for all analysis types |
+| `test_patterns.py` | Unit tests for pattern detection |
+| `example_usage.py` | Library usage examples |
 
-```python
-from fastapi import FastAPI
-from analysis_engine import AnalysisEngine, AlertInput
+---
 
-app = FastAPI()
-engine = AnalysisEngine()
-
-@app.post("/webhook/tradingview")
-async def tradingview_alert(alert: dict):
-    alert_input = AlertInput(
-        symbol=alert["symbol"],
-        alert_message=alert["message"],
-        alert_price=alert["price"],
-        alert_time=datetime.utcnow(),
-        timeframe=Timeframe(alert["timeframe"])
-    )
-    
-    result = engine.process_alert(alert_input)
-    
-    # Send notification with context
-    send_notification(f"""
-    🚨 {alert['symbol']} Alert
-    
-    Pattern: {alert['message']}
-    Confidence: {result.context.confidence:.0%}
-    Recommendation: {result.context.recommendation}
-    
-    Reasoning: {result.context.reasoning}
-    """)
-    
-    return {"status": "ok"}
-```
-
-## License
-
-MIT
+*Part of TradingView Alert Agent v2.0*

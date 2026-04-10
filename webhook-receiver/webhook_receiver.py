@@ -5,9 +5,10 @@ import hashlib
 import logging
 import sys
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, status, Depends
+# BackgroundTasks retained for the alt endpoint signature; orchestration moved to Integration Service
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
@@ -195,13 +196,10 @@ async def receive_webhook(
     background_tasks: BackgroundTasks,
     _: None = Depends(validate_webhook_signature),
 ):
-    """Receive TradingView webhook alert.
+    """Receive and store a TradingView webhook alert.
 
-    Stores the alert immediately and fires a background task that:
-      1. Stores any embedded OHLCV candle into the analysis engine DB.
-      2. Runs the full analysis pipeline (patterns, MA20, context).
-      3. Persists the result for scheduled reports.
-      4. Sends an immediate email if confidence ≥ CONFIDENCE_THRESHOLD.
+    Storage only — orchestration (analysis + email) is handled by the
+    Integration Service (port 8004) which calls POST /analyze separately.
 
     Recommended TradingView alert message template (paste into the Message box):
         {
@@ -231,18 +229,6 @@ async def receive_webhook(
             raw_payload=raw_payload,
         )
         logger.info("Alert %d stored for %s", alert_id, alert.symbol)
-
-        # ── Background: analyse + conditionally email ────────────────────────
-        from alert_processor import process_alert
-
-        background_tasks.add_task(
-            process_alert,
-            alert_id=alert_id,
-            symbol=alert.symbol,
-            tv_interval=alert.interval or "1D",
-            candle=alert.ohlcv_candle(),
-            db=db,
-        )
 
         return AlertResponse(
             status="received",
@@ -407,6 +393,46 @@ async def get_analysis_by_symbol(symbol: str, limit: int = 10):
     """Return recent analysis results for a specific symbol."""
     results = db.get_analysis_results(symbol=symbol, limit=limit)
     return {"symbol": symbol.upper(), "count": len(results), "results": results}
+
+
+class StoreAnalysisRequest(BaseModel):
+    """Request body for storing an analysis result against an alert."""
+
+    symbol: str = Field(..., description="Trading symbol (e.g., BTCUSD)")
+    timeframe: str = Field("1D", description="Chart timeframe")
+    result: Dict[str, Any] = Field(..., description="Analysis result from Analysis Engine")
+
+    @field_validator("symbol")
+    @classmethod
+    def symbol_uppercase(cls, v: str) -> str:
+        return v.upper()
+
+
+@app.post("/analysis/{alert_id}", status_code=status.HTTP_200_OK)
+async def store_analysis(alert_id: int, req: StoreAnalysisRequest):
+    """Store an analysis result produced by the Analysis Engine microservice.
+
+    Called by the Integration Service (FR-004) after receiving a result from
+    the Analysis Engine (port 8001). Persists the result and marks the alert
+    as processed.
+    """
+    try:
+        db.store_analysis_result(
+            alert_id=alert_id,
+            symbol=req.symbol,
+            timeframe=req.timeframe,
+            result=req.result,
+        )
+        db.mark_as_processed(alert_id)
+        logger.info("Analysis stored for alert %d (%s)", alert_id, req.symbol)
+        return {"status": "stored", "alert_id": alert_id}
+
+    except Exception as e:
+        logger.error("Failed to store analysis for alert %d: %s", alert_id, str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to store analysis: {str(e)}",
+        )
 
 
 @app.exception_handler(Exception)
