@@ -1,0 +1,13 @@
+# tradingview-alert-agent - Progress
+
+## Done
+- Initial build complete
+
+## In Progress
+- (update this)
+
+## Next
+- (update this)
+
+## Blockers
+- None
