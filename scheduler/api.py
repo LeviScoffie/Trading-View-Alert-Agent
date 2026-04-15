@@ -128,7 +128,8 @@ async def health_check():
     system_health = get_health()
     
     return HealthResponse(
-        status=system_health["overall_health"],
+        status="ok" if system_health["overall_health"] == "unknown"
+                     else system_health["overall_health"],
         scheduler="running" if scheduler.running else "stopped",
         timestamp=now().isoformat(),
         timezone="America/New_York"

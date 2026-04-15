@@ -1,6 +1,9 @@
 """HTTP clients for communicating with other services."""
 
 import logging
+import hmac
+import hashlib
+import json
 from typing import Optional, Dict, Any
 import httpx
 
@@ -14,6 +17,22 @@ from models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def generate_webhook_signature(body: dict, secret: str) -> str:
+    """Generate HMAC-SHA256 signature for webhook payload.
+    
+    Uses the same JSON serialization as httpx to ensure signature matches.
+    """
+    if not secret:
+        return ""
+    # httpx uses default json.dumps (no sort_keys, with separators)
+    body_bytes = json.dumps(body).encode('utf-8')
+    return hmac.new(
+        secret.encode('utf-8'),
+        body_bytes,
+        hashlib.sha256
+    ).hexdigest()
 
 
 class BaseClient:
@@ -62,10 +81,16 @@ class WebhookClient(BaseClient):
     
     async def store_alert(self, alert: TradingViewAlert) -> Optional[WebhookStoreResponse]:
         """Store alert in webhook receiver."""
+        payload = alert.model_dump()
+        signature = generate_webhook_signature(payload, settings.WEBHOOK_SECRET or "")
+        headers = {}
+        if signature:
+            headers["X-TradingView-Signature"] = signature
         result = await self._request(
             "POST",
             "/webhook",
-            json=alert.model_dump()
+            json=payload,
+            headers=headers
         )
         if result:
             return WebhookStoreResponse(**result)

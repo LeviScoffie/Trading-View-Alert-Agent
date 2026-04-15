@@ -7,11 +7,11 @@ from typing import Optional
 class Settings:
     """Integration service settings loaded from environment variables."""
     
-    # Service URLs
-    WEBHOOK_RECEIVER_URL: str = os.getenv("WEBHOOK_RECEIVER_URL", "http://webhook-receiver:8000")
-    ANALYSIS_ENGINE_URL: str = os.getenv("ANALYSIS_ENGINE_URL", "http://analysis-engine:8001")
-    EMAIL_NOTIFIER_URL: str = os.getenv("EMAIL_NOTIFIER_URL", "http://email-notifier:8002")
-    SCHEDULER_URL: str = os.getenv("SCHEDULER_URL", "http://scheduler:8003")
+    # Service URLs - default to localhost for non-Docker deployment
+    WEBHOOK_RECEIVER_URL: str = os.getenv("WEBHOOK_RECEIVER_URL", "http://localhost:8000")
+    ANALYSIS_ENGINE_URL: str = os.getenv("ANALYSIS_ENGINE_URL", "http://localhost:8001")
+    EMAIL_NOTIFIER_URL: str = os.getenv("EMAIL_NOTIFIER_URL", "http://localhost:8002")
+    SCHEDULER_URL: str = os.getenv("SCHEDULER_URL", "http://localhost:8003")
     
     # Integration service settings
     HOST: str = os.getenv("HOST", "0.0.0.0")

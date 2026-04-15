@@ -17,3 +17,7 @@ pytest-cov>=4.0.0
 
 # Optional: for enhanced numerical operations
 scipy>=1.10.0
+
+
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0

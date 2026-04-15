@@ -254,7 +254,7 @@ async def health_check():
         ))
     
     # Determine overall status
-    all_healthy = all(s.status == "healthy" for s in services)
+    all_healthy = all(s.status in ("healthy", "ok") for s in services)
     overall_status = "healthy" if all_healthy else "degraded"
     
     return HealthResponse(

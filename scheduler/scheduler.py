@@ -180,11 +180,7 @@ class TradingViewScheduler:
                 misfire_grace_time=3600  # 1 hour grace period
             )
             
-            next_run = self.scheduler.get_job(job_id).next_run_time
-            logger.info(
-                f"Added job {job_id}: {job_func.__doc__ or job_id}. "
-                f"Next run: {format_est(next_run) if next_run else 'N/A'}"
-            )
+            logger.info(f"Added job {job_id}: {job_func.__doc__ or job_id}")
     
     def start(self):
         """Start the scheduler."""
@@ -218,6 +214,12 @@ class TradingViewScheduler:
         
         logger.info("Scheduler started successfully")
         logger.info(f"Jobs: {len(self.scheduler.get_jobs())}")
+        
+        # Log next run times after scheduler starts
+        for job_id in JOB_REGISTRY.keys():
+            job = self.scheduler.get_job(job_id)
+            if job and job.next_run_time:
+                logger.info(f"Job {job_id} next run: {format_est(job.next_run_time)}")
     
     def shutdown(self, wait: bool = True):
         """
@@ -335,7 +337,7 @@ class TradingViewScheduler:
             return False
         
         try:
-            self.scheduler.modify_job(job_id, next_run_time=now())
+            self.scheduler.modify_job(job_id, next_run_time=datetime.now())
             logger.info(f"Triggered job {job_id} to run now")
             return True
         except Exception as e:

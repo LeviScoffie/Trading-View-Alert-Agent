@@ -24,8 +24,8 @@ RUN mkdir -p /app/data
 # Default database path
 ENV DB_PATH=/app/data/ohlcv.db
 
-# Run tests by default (override with command)
-CMD ["python", "-m", "pytest", "test_patterns.py", "-v"]
+# Health check endpoint
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')" || exit 1
 
-# Alternative: run as module
-# CMD ["python", "-c", "from analysis_engine import analyze; print(analyze('BTCUSD'))"]
+CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8001"]
